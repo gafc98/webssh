@@ -579,8 +579,8 @@ PAGE = r"""<!doctype html>
     .terminal-panel { background: #080d16; }
     #terminal { flex: 1; min-height: 0; padding: 10px; }
     #terminal .xterm { height: 100%; }
-    #terminal .xterm-cursor-layer .xterm-cursor { opacity: 1 !important; }
-    #terminal .xterm-cursor-layer .xterm-cursor-bar { border-left: 3px solid #67e8c1 !important; }
+    #terminal .xterm-cursor-layer .xterm-cursor { z-index: 1; }
+    #terminal .xterm-cursor-layer .xterm-cursor-bar { border-left: 4px solid #fff !important; }
     .terminal-note { color: #64748b; font-size: 11px; }
     .empty { padding: 16px 10px; color: #64748b; font-size: 13px; }
     @media (max-width: 760px) {
@@ -728,20 +728,21 @@ PAGE = r"""<!doctype html>
 
     function connectTerminal() {
       terminal = new Terminal({
-        cursorBlink: false,
+        cursorBlink: true,
         cursorStyle: "bar",
-        cursorWidth: 3,
+        cursorWidth: 4,
         cursorInactiveStyle: "bar",
         fontFamily: '"DejaVu Sans Mono", "Liberation Mono", monospace',
         fontSize: 14,
         lineHeight: 1.25,
-        theme: { background: "#080d16", foreground: "#dbe4f0", cursor: "#67e8c1", cursorAccent: "#080d16" }
+        theme: { background: "#080d16", foreground: "#dbe4f0", cursor: "#ffffff", cursorAccent: "#080d16" }
       });
       fitAddon = new FitAddon.FitAddon();
       terminal.loadAddon(fitAddon);
       terminal.open(document.getElementById("terminal"));
       fitAddon.fit();
       terminal.focus();
+      terminal.element.addEventListener("pointerdown", () => terminal.focus());
       const scheme = location.protocol === "https:" ? "wss:" : "ws:";
       terminalSocket = new WebSocket(`${scheme}//${location.host}/ws/terminal`);
       terminalSocket.addEventListener("open", () => {
