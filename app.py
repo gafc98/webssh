@@ -264,11 +264,12 @@ async def list_files(request: Request, path: str = "/") -> dict[str, Any]:
     try:
         entries = await asyncio.to_thread(lambda: list(os.scandir(directory)))
     except OSError as exc:
+        logger.exception("Unable to list local directory %s", directory)
         raise local_file_error(exc) from exc
 
     files = []
     for entry in entries:
-        name = entry.filename
+        name = entry.name
         if not name or name in {".", ".."}:
             continue
         try:
@@ -571,6 +572,7 @@ PAGE = r"""<!doctype html>
     .download:hover { color: #67e8c1; background: #1e293b; }
     .file-actions { display: flex; gap: 6px; }
     .upload-button { position: relative; overflow: hidden; padding: 7px 9px; color: #b6c4d6; background: #162033; border: 1px solid #2b3a53; border-radius: 6px; font-size: 12px; }
+    .upload-button:hover, .upload-button:focus-within { border-color: #67e8c1; color: #fff; background: #1b2b3e; }
     .upload-button input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
     .terminal-panel { background: #080d16; }
     #terminal { flex: 1; min-height: 0; padding: 10px; }
@@ -717,15 +719,18 @@ PAGE = r"""<!doctype html>
 
     function connectTerminal() {
       terminal = new Terminal({
-        cursorBlink: true,
+        cursorBlink: false,
+        cursorStyle: "block",
+        cursorInactiveStyle: "block",
         fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
         fontSize: 13,
-        theme: { background: "#080d16", foreground: "#dbe4f0", cursor: "#67e8c1" }
+        theme: { background: "#080d16", foreground: "#dbe4f0", cursor: "#67e8c1", cursorAccent: "#080d16" }
       });
       fitAddon = new FitAddon.FitAddon();
       terminal.loadAddon(fitAddon);
       terminal.open(document.getElementById("terminal"));
       fitAddon.fit();
+      terminal.focus();
       const scheme = location.protocol === "https:" ? "wss:" : "ws:";
       terminalSocket = new WebSocket(`${scheme}//${location.host}/ws/terminal`);
       terminalSocket.addEventListener("open", () => {
