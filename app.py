@@ -580,8 +580,7 @@ PAGE = r"""<!doctype html>
     #terminal { flex: 1; min-height: 0; padding: 10px; }
     #terminal .xterm { height: 100%; }
     #terminal .xterm-screen { position: relative; }
-    #terminal-cursor-overlay { position: absolute; z-index: 10; width: 4px; background: #00ff66; box-shadow: 0 0 5px #00ff66; pointer-events: none; }
-    #terminal .xterm-selection div { background: #355a83 !important; }
+    #terminal-cursor-overlay { position: absolute; z-index: 10; width: 2px; background: #fff; pointer-events: none; }
     .terminal-tools { display: flex; align-items: center; gap: 10px; }
     .quiet-button:disabled { opacity: .45; cursor: not-allowed; }
     .terminal-note { color: #64748b; font-size: 11px; }
@@ -738,10 +737,18 @@ PAGE = r"""<!doctype html>
         cursorStyle: "bar",
         cursorWidth: 4,
         cursorInactiveStyle: "bar",
-        fontFamily: '"DejaVu Sans Mono", "Liberation Mono", monospace',
+        fontFamily: 'ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace',
         fontSize: 14,
         lineHeight: 1.25,
-        theme: { background: "#080d16", foreground: "#dbe4f0", cursor: "#00ff66", cursorAccent: "#080d16" }
+        theme: {
+          background: "#080d16",
+          foreground: "#dbe4f0",
+          cursor: "#ffffff",
+          cursorAccent: "#080d16",
+          selectionBackground: "rgba(68, 125, 190, 0.75)",
+          selectionForeground: "#ffffff",
+          selectionInactiveBackground: "rgba(68, 125, 190, 0.75)"
+        }
       });
       fitAddon = new FitAddon.FitAddon();
       terminal.loadAddon(fitAddon);
@@ -756,11 +763,21 @@ PAGE = r"""<!doctype html>
       screen.append(cursorOverlay);
 
       const updateCursorOverlay = () => {
-        const { cursorX, cursorY } = terminal.buffer.active;
-        if (!terminal.cols || !terminal.rows || !screen.clientWidth || !screen.clientHeight) return;
-        cursorOverlay.style.left = `${cursorX * screen.clientWidth / terminal.cols}px`;
-        cursorOverlay.style.top = `${cursorY * screen.clientHeight / terminal.rows}px`;
-        cursorOverlay.style.height = `${screen.clientHeight / terminal.rows}px`;
+        requestAnimationFrame(() => {
+          const canvas = screen.querySelector("canvas");
+          if (!canvas || !terminal.cols || !terminal.rows) return;
+          const screenRect = screen.getBoundingClientRect();
+          const canvasRect = canvas.getBoundingClientRect();
+          if (!screenRect.width || !screenRect.height || !canvasRect.width || !canvasRect.height) return;
+          const scaleX = screen.offsetWidth ? screenRect.width / screen.offsetWidth : 1;
+          const scaleY = screen.offsetHeight ? screenRect.height / screen.offsetHeight : 1;
+          const { cursorX, cursorY } = terminal.buffer.active;
+          const cellWidth = canvasRect.width / terminal.cols / scaleX;
+          const cellHeight = canvasRect.height / terminal.rows / scaleY;
+          cursorOverlay.style.left = `${(canvasRect.left - screenRect.left) / scaleX + cursorX * cellWidth}px`;
+          cursorOverlay.style.top = `${(canvasRect.top - screenRect.top) / scaleY + cursorY * cellHeight}px`;
+          cursorOverlay.style.height = `${cellHeight}px`;
+        });
       };
       terminal.onCursorMove(updateCursorOverlay);
       terminal.onRender(updateCursorOverlay);
