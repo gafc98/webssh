@@ -561,7 +561,9 @@ PAGE = r"""<!doctype html>
     .panel { min-width: 0; background: #0d1422; border: 1px solid #27334a; border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; }
     .panel-head { min-height: 52px; padding: 0 14px; display: flex; align-items: center; justify-content: space-between; gap: 10px; border-bottom: 1px solid #27334a; }
     .panel-title { color: #e2e8f0; font-size: 13px; font-weight: 700; }
-    .path-bar { padding: 10px 13px; color: #94a3b8; font: 12px ui-monospace, monospace; border-bottom: 1px solid #1e293b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .path-bar { padding: 7px 13px; border-bottom: 1px solid #1e293b; }
+    .path-input { width: 100%; padding: 4px 0; color: #94a3b8; background: transparent; border: 0; border-radius: 0; outline: none; box-shadow: none; font: 12px ui-monospace, monospace; }
+    .path-input:focus { color: #e2e8f0; border: 0; box-shadow: none; }
     .file-list { overflow: auto; flex: 1; padding: 5px 8px; }
     .file-row { min-height: 38px; display: flex; align-items: center; gap: 9px; padding: 5px 8px; border-radius: 6px; color: #dbe4f0; font-size: 13px; }
     .file-row:hover { background: #172338; }
@@ -576,6 +578,9 @@ PAGE = r"""<!doctype html>
     .upload-button input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
     .terminal-panel { background: #080d16; }
     #terminal { flex: 1; min-height: 0; padding: 10px; }
+    #terminal .xterm { height: 100%; }
+    #terminal .xterm-cursor-layer .xterm-cursor { opacity: 1 !important; }
+    #terminal .xterm-cursor-layer .xterm-cursor-bar { border-left: 3px solid #67e8c1 !important; }
     .terminal-note { color: #64748b; font-size: 11px; }
     .empty { padding: 16px 10px; color: #64748b; font-size: 13px; }
     @media (max-width: 760px) {
@@ -615,10 +620,13 @@ PAGE = r"""<!doctype html>
           <span class="panel-title">System files</span>
           <div class="file-actions">
             <button id="upButton" class="quiet-button" title="Parent directory">Up</button>
-            <label class="upload-button">Upload<input id="uploadInput" type="file" multiple></label>
+            <button id="uploadButton" class="quiet-button" type="button">Upload</button>
+            <input id="uploadInput" class="hidden" type="file" multiple>
           </div>
         </div>
-        <div id="pathBar" class="path-bar">/</div>
+        <form id="pathForm" class="path-bar">
+          <input id="pathInput" class="path-input" type="text" value="/" aria-label="Current directory path" autocomplete="off" spellcheck="false">
+        </form>
         <div id="fileList" class="file-list"><div class="empty">Loading files…</div></div>
       </aside>
       <section class="panel terminal-panel">
@@ -637,6 +645,7 @@ PAGE = r"""<!doctype html>
     const loginError = document.getElementById("loginError");
     const fileList = document.getElementById("fileList");
     let currentPath = "/";
+    let homePath = "/";
     let terminal;
     let fitAddon;
     let terminalSocket;
@@ -671,7 +680,7 @@ PAGE = r"""<!doctype html>
     async function loadFiles(path = currentPath) {
       const result = await api(`/api/files?path=${encodeURIComponent(path)}`).then(response => response.json());
       currentPath = result.path;
-      document.getElementById("pathBar").textContent = currentPath;
+      document.getElementById("pathInput").value = currentPath;
       fileList.replaceChildren();
       if (!result.entries.length) {
         fileList.innerHTML = '<div class="empty">This directory is empty.</div>';
@@ -720,10 +729,12 @@ PAGE = r"""<!doctype html>
     function connectTerminal() {
       terminal = new Terminal({
         cursorBlink: false,
-        cursorStyle: "block",
-        cursorInactiveStyle: "block",
-        fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-        fontSize: 13,
+        cursorStyle: "bar",
+        cursorWidth: 3,
+        cursorInactiveStyle: "bar",
+        fontFamily: '"DejaVu Sans Mono", "Liberation Mono", monospace',
+        fontSize: 14,
+        lineHeight: 1.25,
         theme: { background: "#080d16", foreground: "#dbe4f0", cursor: "#67e8c1", cursorAccent: "#080d16" }
       });
       fitAddon = new FitAddon.FitAddon();
@@ -763,7 +774,8 @@ PAGE = r"""<!doctype html>
       loginView.classList.add("hidden");
       appView.classList.remove("hidden");
       document.getElementById("userLabel").textContent = info.username;
-      await loadFiles(info.home || "/").catch(showError);
+      homePath = info.home || "/";
+      await loadFiles(homePath).catch(showError);
       connectTerminal();
     }
 
@@ -787,6 +799,24 @@ PAGE = r"""<!doctype html>
 
     document.getElementById("upButton").addEventListener("click", () => {
       if (currentPath !== "/") loadFiles(currentPath.slice(0, currentPath.lastIndexOf("/")) || "/").catch(showError);
+    });
+
+    document.getElementById("pathForm").addEventListener("submit", event => {
+      event.preventDefault();
+      const requestedPath = document.getElementById("pathInput").value.trim();
+      if (!requestedPath) {
+        document.getElementById("pathInput").value = currentPath;
+        return;
+      }
+      let path = requestedPath;
+      if (path === "~") path = homePath;
+      else if (path.startsWith("~/")) path = `${homePath}/${path.slice(2)}`;
+      else if (!path.startsWith("/")) path = `${currentPath.replace(/\/$/, "")}/${path}`;
+      loadFiles(path.replace(/\/{2,}/g, "/")).catch(showError);
+    });
+
+    document.getElementById("uploadButton").addEventListener("click", () => {
+      document.getElementById("uploadInput").click();
     });
 
     document.getElementById("uploadInput").addEventListener("change", async event => {
