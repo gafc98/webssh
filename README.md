@@ -1,34 +1,46 @@
 # WebSSH
 
-A small Python web app for opening an SSH terminal and browsing files on one Debian host over SFTP.
+A Python web app which runs on a Debian SBC and provides a browser terminal and file manager for that same machine. It uses Linux PAM to check the local account password, starts the shell as the account running the app, and accesses files with that account's normal OS permissions. There is no SSH server connection or SSH host/port setting.
 
 ## Requirements
 
-- Python 3.10 or newer
-- SSH and SFTP enabled on the Debian system
-- The SSH server's host key present in your `known_hosts` file
+- Debian with Python 3.10 or newer
+- A non-root Linux user account with an interactive shell and password
+- PAM support and a pseudo-terminal
 
-The app connects only to the host configured by `SSH_HOST`. It verifies SSH host keys using the current user's default `known_hosts` file, or the file specified by `SSH_KNOWN_HOSTS`. Do not disable host-key verification.
+The login name must match the Linux account running the WebSSH process. This avoids claiming one user's identity while running the shell/files as another. The app deliberately refuses to run as root.
 
-## Run locally
+## Install and run
 
-In PowerShell:
+Run as the Linux account whose files and shell you want to access:
 
-```powershell
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
+```bash
+sudo apt update
+sudo apt install python3-venv
+python3 -m venv venv
+source venv/bin/activate
 python -m pip install -r requirements.txt
-$env:SSH_HOST = "192.168.1.50"
-$env:SSH_PORT = "22"
-$env:WEBSSH_SESSION_SECRET = (python -c "import secrets; print(secrets.token_urlsafe(32))")
-$env:WEBSSH_COOKIE_SECURE = "0"
-python -m uvicorn app:app --host 127.0.0.1 --port 8000
+cp .env.example .env
 ```
 
-Open `http://127.0.0.1:8000`. Set `WEBSSH_COOKIE_SECURE=0` only for local HTTP testing on a trusted machine. For deployment, use HTTPS and leave secure cookies enabled. Set `WEBSSH_SESSION_SECRET` to a persistent random secret, and set `SSH_KNOWN_HOSTS` if the host-key file is not in the default location.
+Edit `.env` and set `WEBSSH_SESSION_SECRET` to a unique random value. Generate one with:
 
-## Secure access
+```bash
+python -c 'import secrets; print(secrets.token_urlsafe(32))'
+```
 
-Do not expose the app directly to the public internet. Access it over a VPN/private network or through a properly configured HTTPS reverse proxy. The app forwards the signed-in user's SSH privileges, so use a non-root Debian account and protect access to the web server. The app does not persist the SSH password; it passes it to AsyncSSH to establish the connection and retains active SSH connections in memory. Sessions disconnect after 30 minutes idle or when the app exits. Run one Uvicorn worker because session state is not shared between worker processes.
+Then start the app:
 
-The terminal UI loads xterm.js from jsDelivr, so browsers need access to that CDN. Files can be uploaded up to 100 MB each.
+```bash
+WEBSSH_COOKIE_SECURE=false python -m uvicorn app:app --host 127.0.0.1 --port 8000
+```
+
+Open `http://127.0.0.1:8000` on the SBC for local testing. For remote use, leave `WEBSSH_COOKIE_SECURE=true`, put the app behind an HTTPS reverse proxy, and connect over a VPN/private network; configure the proxy to forward to `127.0.0.1:8000`. The secure cookie setting requires HTTPS in the browser. Disable it only for local HTTP testing on the SBC itself.
+
+The `.env` file is optional: settings can also be supplied as environment variables. `.env` is ignored by Git.
+
+## Security
+
+Do not expose this service directly to the public internet. The terminal runs arbitrary commands with the WebSSH service account's full permissions, and the file manager accesses files with those same permissions. Use a dedicated non-root account if you want to limit access. PAM checks the password locally; it is not saved. Session records and terminal processes are held in memory and idle sessions expire after 30 minutes. Run a single Uvicorn worker because session state is process-local.
+
+The browser terminal loads xterm.js from jsDelivr, so clients need access to that CDN. Files can be uploaded up to 100 MB each.

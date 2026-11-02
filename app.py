@@ -1,4 +1,5 @@
 import asyncio
+import errno
 import hmac
 import json
 import logging
@@ -10,21 +11,20 @@ import stat
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, AsyncGenerator, AsyncIterator
 from urllib.parse import quote, urlsplit
 
-import asyncssh
+from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from starlette.middleware.sessions import SessionMiddleware
 
 
+load_dotenv()
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("webssh")
 
-SSH_HOST = os.environ.get("SSH_HOST", "").strip()
-SSH_PORT = int(os.environ.get("SSH_PORT", "22"))
-SSH_KNOWN_HOSTS = os.environ.get("SSH_KNOWN_HOSTS")
 SESSION_SECRET = os.environ.get("WEBSSH_SESSION_SECRET")
 if not SESSION_SECRET:
     SESSION_SECRET = secrets.token_urlsafe(32)
@@ -36,22 +36,22 @@ MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 
 
 @dataclass
-class RemoteSession:
-    connection: asyncssh.SSHClientConnection
-    sftp: asyncssh.SFTPClient
+class LocalSession:
     username: str
+    home: str
     last_activity: float
+    terminal: Any | None = None
+    terminal_active: bool = False
 
 
-remote_sessions: dict[str, RemoteSession] = {}
+local_sessions: dict[str, LocalSession] = {}
 
 
-async def close_connection(connection: asyncssh.SSHClientConnection) -> None:
-    connection.close()
-    try:
-        await connection.wait_closed()
-    except (asyncssh.Error, OSError):
-        logger.exception("Error while closing an SSH connection")
+def close_terminal(session: LocalSession) -> None:
+    process = session.terminal
+    session.terminal = None
+    if process is not None and not process.closed:
+        process.close(force=True)
 
 
 async def expire_idle_sessions() -> None:
@@ -60,13 +60,13 @@ async def expire_idle_sessions() -> None:
         now = time.monotonic()
         expired = [
             session_id
-            for session_id, remote in remote_sessions.items()
-            if now - remote.last_activity >= SESSION_IDLE_SECONDS
+            for session_id, local in local_sessions.items()
+            if now - local.last_activity >= SESSION_IDLE_SECONDS
         ]
         for session_id in expired:
-            remote = remote_sessions.pop(session_id, None)
-            if remote is not None:
-                await close_connection(remote.connection)
+            local = local_sessions.pop(session_id, None)
+            if local is not None:
+                close_terminal(local)
 
 
 @asynccontextmanager
@@ -80,11 +80,10 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
             await cleanup_task
         except asyncio.CancelledError:
             pass
-        sessions = list(remote_sessions.values())
-        remote_sessions.clear()
-        await asyncio.gather(
-            *(close_connection(remote.connection) for remote in sessions)
-        )
+        sessions = list(local_sessions.values())
+        local_sessions.clear()
+        for session in sessions:
+            close_terminal(session)
 
 
 app = FastAPI(title="WebSSH", lifespan=lifespan)
@@ -108,19 +107,19 @@ async def add_security_headers(request: Request, call_next: Any) -> Any:
     return response
 
 
-def normalize_remote_path(path: str) -> str:
+def normalize_local_path(path: str) -> str:
     if "\x00" in path or len(path) > 4096 or not path.startswith("/"):
-        raise HTTPException(status_code=400, detail="A valid absolute remote path is required")
+        raise HTTPException(status_code=400, detail="A valid absolute path is required")
     return "/" + posixpath.normpath(path).lstrip("/")
 
 
-def get_remote_session(request: Request) -> RemoteSession:
+def get_local_session(request: Request) -> LocalSession:
     session_id = request.session.get("session_id")
-    remote = remote_sessions.get(session_id) if isinstance(session_id, str) else None
-    if remote is None:
+    local = local_sessions.get(session_id) if isinstance(session_id, str) else None
+    if local is None:
         raise HTTPException(status_code=401, detail="Please sign in again")
-    remote.last_activity = time.monotonic()
-    return remote
+    local.last_activity = time.monotonic()
+    return local
 
 
 def verify_csrf(request: Request) -> None:
@@ -130,47 +129,53 @@ def verify_csrf(request: Request) -> None:
         raise HTTPException(status_code=403, detail="Invalid request token")
 
 
-def remote_file_error(exc: asyncssh.SFTPError) -> HTTPException:
-    logger.info("Remote SFTP operation failed: %s", exc)
-    return HTTPException(status_code=502, detail="The remote file operation failed")
+def local_file_error(exc: OSError) -> HTTPException:
+    logger.info("Local file operation failed: %s", exc)
+    if isinstance(exc, FileNotFoundError):
+        return HTTPException(status_code=404, detail="The requested file or directory was not found")
+    if isinstance(exc, PermissionError):
+        return HTTPException(status_code=403, detail="Permission denied")
+    return HTTPException(status_code=500, detail="The local file operation failed")
 
 
-async def connect_to_target(username: str, password: str) -> RemoteSession:
-    if not SSH_HOST:
-        raise HTTPException(status_code=503, detail="Set SSH_HOST before signing in")
+def authenticate_local_user(username: str, password: str) -> tuple[str, str, str]:
+    get_euid = getattr(os, "geteuid", None)
+    if not callable(get_euid):
+        raise HTTPException(status_code=503, detail="Local account login is supported on Linux only")
+    effective_uid = get_euid()
+    if effective_uid == 0:
+        raise HTTPException(status_code=503, detail="Run WebSSH as a non-root account")
 
-    connect_options: dict[str, Any] = {
-        "host": SSH_HOST,
-        "port": SSH_PORT,
-        "username": username,
-        "password": password,
-        "login_timeout": 20,
-        "keepalive_interval": 30,
-        "keepalive_count_max": 3,
-    }
-    if SSH_KNOWN_HOSTS:
-        connect_options["known_hosts"] = SSH_KNOWN_HOSTS
-
-    connection: asyncssh.SSHClientConnection | None = None
     try:
-        connection = await asyncssh.connect(**connect_options)
-        sftp = await connection.start_sftp_client()
-    except asyncssh.PermissionDenied as exc:
-        if connection is not None:
-            await close_connection(connection)
-        raise HTTPException(status_code=401, detail="SSH login was rejected") from exc
-    except (asyncssh.Error, OSError) as exc:
-        if connection is not None:
-            await close_connection(connection)
-        logger.warning("Unable to establish SSH session: %s", exc)
-        raise HTTPException(status_code=502, detail="Unable to connect to the SSH server") from exc
+        import pwd
+        import pam
+    except ImportError as exc:
+        logger.exception("Local PAM authentication dependencies are unavailable")
+        raise HTTPException(status_code=503, detail="Install the WebSSH Linux authentication dependencies") from exc
 
-    return RemoteSession(
-        connection=connection,
-        sftp=sftp,
-        username=username,
-        last_activity=time.monotonic(),
-    )
+    try:
+        account = pwd.getpwnam(username)
+        current_account = pwd.getpwuid(effective_uid)
+    except KeyError as exc:
+        raise HTTPException(status_code=401, detail="Local login was rejected") from exc
+
+    if account.pw_uid != current_account.pw_uid:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Run WebSSH as {username} to access that account",
+        )
+    if not account.pw_shell or account.pw_shell.endswith("/nologin") or account.pw_shell.endswith("/false"):
+        raise HTTPException(status_code=403, detail="This account does not have an interactive shell")
+
+    try:
+        authenticated = pam.pam().authenticate(username, password, service="login")
+    except Exception as exc:
+        logger.exception("PAM authentication failed unexpectedly")
+        raise HTTPException(status_code=503, detail="Local account authentication failed") from exc
+    if not authenticated:
+        raise HTTPException(status_code=401, detail="Local login was rejected")
+
+    return account.pw_name, account.pw_dir, account.pw_shell
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -195,8 +200,8 @@ async def index(request: Request) -> HTMLResponse:
 
 @app.get("/api/session")
 async def session_info(request: Request) -> dict[str, str]:
-    remote = get_remote_session(request)
-    return {"username": remote.username, "host": SSH_HOST}
+    local = get_local_session(request)
+    return {"username": local.username, "home": local.home}
 
 
 @app.post("/api/login")
@@ -220,17 +225,25 @@ async def login(request: Request) -> JSONResponse:
     ):
         raise HTTPException(status_code=400, detail="Enter a valid username and password")
 
-    remote = await connect_to_target(username.strip(), password)
+    authenticated_username, home, _ = await asyncio.to_thread(
+        authenticate_local_user,
+        username.strip(),
+        password,
+    )
     old_session_id = request.session.get("session_id")
     if isinstance(old_session_id, str):
-        old_remote = remote_sessions.pop(old_session_id, None)
-        if old_remote is not None:
-            await close_connection(old_remote.connection)
+        old_local = local_sessions.pop(old_session_id, None)
+        if old_local is not None:
+            close_terminal(old_local)
 
     session_id = secrets.token_urlsafe(32)
-    remote_sessions[session_id] = remote
+    local_sessions[session_id] = LocalSession(
+        username=authenticated_username,
+        home=home,
+        last_activity=time.monotonic(),
+    )
     request.session["session_id"] = session_id
-    return JSONResponse({"username": remote.username, "host": SSH_HOST})
+    return JSONResponse({"username": authenticated_username, "home": home})
 
 
 @app.post("/api/logout")
@@ -238,27 +251,32 @@ async def logout(request: Request) -> JSONResponse:
     verify_csrf(request)
     session_id = request.session.pop("session_id", None)
     if isinstance(session_id, str):
-        remote = remote_sessions.pop(session_id, None)
-        if remote is not None:
-            await close_connection(remote.connection)
+        local = local_sessions.pop(session_id, None)
+        if local is not None:
+            close_terminal(local)
     return JSONResponse({"ok": True})
 
 
 @app.get("/api/files")
 async def list_files(request: Request, path: str = "/") -> dict[str, Any]:
-    remote = get_remote_session(request)
-    directory = normalize_remote_path(path)
+    get_local_session(request)
+    directory = normalize_local_path(path)
     try:
-        entries = await remote.sftp.listdir_attr(directory)
-    except asyncssh.SFTPError as exc:
-        raise remote_file_error(exc) from exc
+        entries = await asyncio.to_thread(lambda: list(os.scandir(directory)))
+    except OSError as exc:
+        raise local_file_error(exc) from exc
 
     files = []
     for entry in entries:
         name = entry.filename
         if not name or name in {".", ".."}:
             continue
-        mode = entry.permissions or 0
+        try:
+            metadata = entry.stat(follow_symlinks=False)
+        except OSError as exc:
+            logger.info("Unable to inspect local file %s: %s", entry.path, exc)
+            continue
+        mode = metadata.st_mode
         if stat.S_ISDIR(mode):
             kind = "directory"
         elif stat.S_ISLNK(mode):
@@ -272,8 +290,8 @@ async def list_files(request: Request, path: str = "/") -> dict[str, Any]:
                 "name": name,
                 "path": posixpath.join(directory, name),
                 "type": kind,
-                "size": entry.size or 0,
-                "modified": entry.mtime or 0,
+                "size": metadata.st_size,
+                "modified": metadata.st_mtime,
             }
         )
     files.sort(key=lambda item: (item["type"] != "directory", item["name"].casefold()))
@@ -282,27 +300,32 @@ async def list_files(request: Request, path: str = "/") -> dict[str, Any]:
 
 @app.get("/api/download")
 async def download_file(request: Request, path: str) -> StreamingResponse:
-    remote = get_remote_session(request)
-    remote_path = normalize_remote_path(path)
+    local = get_local_session(request)
+    local_path = normalize_local_path(path)
     try:
-        remote_file = await remote.sftp.open(remote_path, "rb")
-    except asyncssh.SFTPError as exc:
-        raise remote_file_error(exc) from exc
+        metadata = await asyncio.to_thread(os.stat, local_path)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise HTTPException(status_code=400, detail="Only regular files can be downloaded")
+        local_file = await asyncio.to_thread(open, local_path, "rb")
+    except OSError as exc:
+        raise local_file_error(exc) from exc
 
     async def stream_file() -> AsyncIterator[bytes]:
         try:
-            async with remote_file:
+            try:
                 while True:
-                    chunk = await remote_file.read(64 * 1024)
+                    chunk = await asyncio.to_thread(local_file.read, 64 * 1024)
                     if not chunk:
                         break
-                    remote.last_activity = time.monotonic()
+                    local.last_activity = time.monotonic()
                     yield chunk
-        except asyncssh.SFTPError:
-            logger.exception("Remote download failed during transfer")
-            raise
+            finally:
+                await asyncio.to_thread(local_file.close)
+        except OSError as exc:
+            logger.exception("Local download failed during transfer")
+            raise local_file_error(exc) from exc
 
-    filename = posixpath.basename(remote_path) or "download"
+    filename = posixpath.basename(local_path) or "download"
     media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     return StreamingResponse(
         stream_file(),
@@ -318,41 +341,46 @@ async def upload_file(
     file: UploadFile = File(...),
 ) -> dict[str, str]:
     verify_csrf(request)
-    remote = get_remote_session(request)
-    directory = normalize_remote_path(path)
+    local = get_local_session(request)
+    directory = normalize_local_path(path)
     raw_name = (file.filename or "").replace("\\", "/")
     filename = posixpath.basename(raw_name)
     if not filename or filename in {".", ".."} or "\x00" in filename:
         raise HTTPException(status_code=400, detail="Choose a valid file name")
 
-    destination = posixpath.join(directory, filename)
-    temporary_path = posixpath.join(directory, f".webssh-upload-{secrets.token_hex(16)}")
+    destination = Path(directory) / filename
+    temporary_path = Path(directory) / f".webssh-upload-{secrets.token_hex(16)}"
     total_bytes = 0
     try:
-        async with await remote.sftp.open(temporary_path, "wb") as target:
+        target = await asyncio.to_thread(open, temporary_path, "xb")
+        try:
             while chunk := await file.read(64 * 1024):
                 total_bytes += len(chunk)
                 if total_bytes > MAX_UPLOAD_BYTES:
                     raise HTTPException(status_code=413, detail="File exceeds the 100 MB upload limit")
-                await target.write(chunk)
-        await remote.sftp.posix_rename(temporary_path, destination)
+                await asyncio.to_thread(target.write, chunk)
+            await asyncio.to_thread(target.close)
+        except BaseException:
+            await asyncio.to_thread(target.close)
+            raise
+        await asyncio.to_thread(os.replace, temporary_path, destination)
     except HTTPException:
         try:
-            await remote.sftp.remove(temporary_path)
-        except asyncssh.SFTPError:
-            logger.exception("Unable to remove a partial remote upload")
+            await asyncio.to_thread(temporary_path.unlink, missing_ok=True)
+        except OSError:
+            logger.exception("Unable to remove a partial local upload")
         raise
-    except asyncssh.SFTPError as exc:
+    except OSError as exc:
         try:
-            await remote.sftp.remove(temporary_path)
-        except asyncssh.SFTPError:
-            logger.exception("Unable to remove a partial remote upload")
-        raise remote_file_error(exc) from exc
+            await asyncio.to_thread(temporary_path.unlink, missing_ok=True)
+        except OSError:
+            logger.exception("Unable to remove a partial local upload")
+        raise local_file_error(exc) from exc
     finally:
         await file.close()
 
-    remote.last_activity = time.monotonic()
-    return {"name": filename, "path": destination}
+    local.last_activity = time.monotonic()
+    return {"name": filename, "path": str(destination)}
 
 
 @app.websocket("/ws/terminal")
@@ -364,70 +392,135 @@ async def terminal(websocket: WebSocket) -> None:
         return
 
     session_id = websocket.session.get("session_id")
-    remote = remote_sessions.get(session_id) if isinstance(session_id, str) else None
-    if remote is None:
+    local = local_sessions.get(session_id) if isinstance(session_id, str) else None
+    if local is None:
         await websocket.close(code=4401)
         return
+    if local.terminal_active:
+        await websocket.close(code=4409)
+        return
 
-    await websocket.accept()
-    process: asyncssh.SSHClientProcess[str] | None = None
-    output_task: asyncio.Task[None] | None = None
+    local.terminal_active = True
+    process: Any | None = None
+    loop = asyncio.get_running_loop()
+    output_queue: asyncio.Queue[bytes | None | Exception] = asyncio.Queue(maxsize=64)
+    master_fd: int | None = None
+    output_task: asyncio.Task[bytes | None | Exception] | None = None
+    input_task: asyncio.Task[str] | None = None
+    output_paused = False
+
+    def read_terminal() -> None:
+        nonlocal output_paused
+        assert master_fd is not None
+        if output_queue.full():
+            loop.remove_reader(master_fd)
+            output_paused = True
+            return
+        try:
+            output_queue.put_nowait(os.read(master_fd, 4096))
+        except BlockingIOError:
+            return
+        except OSError as exc:
+            if exc.errno == errno.EIO:
+                output_queue.put_nowait(None)
+            else:
+                output_queue.put_nowait(exc)
+
     try:
-        process = await remote.connection.create_process(
-            term_type="xterm-256color",
-            term_size=(120, 32),
-            encoding="utf-8",
+        await websocket.accept()
+        try:
+            import pwd
+            from ptyprocess import PtyProcess
+        except ImportError as exc:
+            raise HTTPException(status_code=503, detail="A Linux pseudo-terminal is required") from exc
+        account = await asyncio.to_thread(pwd.getpwnam, local.username)
+        environment = os.environ.copy()
+        environment.update(
+            HOME=local.home,
+            LOGNAME=local.username,
+            SHELL=account.pw_shell,
+            TERM="xterm-256color",
+            USER=local.username,
         )
+        process = PtyProcess.spawn(
+            [account.pw_shell, "-l"],
+            cwd=local.home,
+            env=environment,
+            dimensions=(32, 120),
+        )
+        local.terminal = process
+        master_fd = process.fd
+        os.set_blocking(master_fd, False)
+        loop.add_reader(master_fd, read_terminal)
 
-        async def forward_output() -> None:
-            assert process is not None
-            while True:
-                data = await process.stdout.read(4096)
-                if not data:
+        output_task = asyncio.create_task(output_queue.get())
+        input_task = asyncio.create_task(websocket.receive_text())
+        while True:
+            assert output_task is not None
+            assert input_task is not None
+            done, _ = await asyncio.wait(
+                (output_task, input_task), return_when=asyncio.FIRST_COMPLETED
+            )
+
+            if output_task in done:
+                output = output_task.result()
+                if isinstance(output, Exception):
+                    raise output
+                if output is None or output == b"":
                     await websocket.close(code=1000)
                     break
-                remote.last_activity = time.monotonic()
-                await websocket.send_json({"type": "output", "data": data})
+                if output_paused and master_fd is not None:
+                    output_paused = False
+                    loop.add_reader(master_fd, read_terminal)
+                local.last_activity = time.monotonic()
+                await websocket.send_json({"type": "output", "data": output.decode("utf-8", errors="replace")})
+                output_task = asyncio.create_task(output_queue.get())
 
-        output_task = asyncio.create_task(forward_output())
-        while True:
-            message = json.loads(await websocket.receive_text())
-            if not isinstance(message, dict):
-                continue
-            if message.get("type") == "input" and isinstance(message.get("data"), str):
-                process.stdin.write(message["data"])
-                await process.stdin.drain()
-                remote.last_activity = time.monotonic()
-            elif message.get("type") == "resize":
-                cols = message.get("cols")
-                rows = message.get("rows")
-                if (
-                    isinstance(cols, int)
-                    and isinstance(rows, int)
-                    and not isinstance(cols, bool)
-                    and not isinstance(rows, bool)
-                ):
-                    process.change_terminal_size(
-                        max(20, min(cols, 400)),
-                        max(5, min(rows, 200)),
-                    )
+            if input_task in done:
+                message = json.loads(input_task.result())
+                input_task = asyncio.create_task(websocket.receive_text())
+                if not isinstance(message, dict):
+                    continue
+                if message.get("type") == "input" and isinstance(message.get("data"), str):
+                    data = message["data"].encode("utf-8")
+                    if len(data) > 65536:
+                        await websocket.close(code=1009)
+                        break
+                    await asyncio.to_thread(process.write, data)
+                    local.last_activity = time.monotonic()
+                elif message.get("type") == "resize":
+                    cols = message.get("cols")
+                    rows = message.get("rows")
+                    if (
+                        isinstance(cols, int)
+                        and isinstance(rows, int)
+                        and not isinstance(cols, bool)
+                        and not isinstance(rows, bool)
+                    ):
+                        process.setwinsize(
+                            max(5, min(rows, 200)),
+                            max(20, min(cols, 400)),
+                        )
     except WebSocketDisconnect:
         pass
-    except (asyncssh.Error, OSError, json.JSONDecodeError, RuntimeError):
+    except (OSError, json.JSONDecodeError, RuntimeError, HTTPException):
         logger.exception("Terminal session ended with an error")
         try:
             await websocket.close(code=1011)
         except RuntimeError:
             logger.debug("Terminal WebSocket was already closed")
     finally:
-        if output_task is not None:
-            output_task.cancel()
-            task_results = await asyncio.gather(output_task, return_exceptions=True)
-            for result in task_results:
-                if isinstance(result, Exception) and not isinstance(result, asyncio.CancelledError):
-                    logger.error("Terminal output task failed: %s", result)
-        if process is not None:
-            process.close()
+        pending_tasks = [
+            task for task in (output_task, input_task) if task is not None and not task.done()
+        ]
+        for task in pending_tasks:
+            task.cancel()
+        if pending_tasks:
+            await asyncio.gather(*pending_tasks, return_exceptions=True)
+        if master_fd is not None:
+            loop.remove_reader(master_fd)
+        close_terminal(local)
+        local.terminal_active = False
 
 
 PAGE = r"""<!doctype html>
@@ -496,11 +589,11 @@ PAGE = r"""<!doctype html>
   <main id="loginView" class="login-wrap">
     <section class="login-card">
       <div class="brand"><div class="brand-mark">&gt;_</div><span>WebSSH</span></div>
-      <p class="muted">Connect to your Debian system with your SSH account. Credentials are used only to establish this session.</p>
+      <p class="muted">Sign in with the Linux account running this app. Your password is checked locally and never stored.</p>
       <form id="loginForm">
-        <div class="field"><label for="username">SSH username</label><input id="username" name="username" autocomplete="username" required autofocus></div>
-        <div class="field"><label for="password">SSH password</label><input id="password" name="password" type="password" autocomplete="current-password" required></div>
-        <button class="primary" type="submit">Connect securely</button>
+        <div class="field"><label for="username">Linux username</label><input id="username" name="username" autocomplete="username" required autofocus></div>
+        <div class="field"><label for="password">Linux password</label><input id="password" name="password" type="password" autocomplete="current-password" required></div>
+        <button class="primary" type="submit">Sign in</button>
         <div id="loginError" class="error" role="alert"></div>
       </form>
     </section>
@@ -517,7 +610,7 @@ PAGE = r"""<!doctype html>
     <section class="workspace">
       <aside class="panel">
         <div class="panel-head">
-          <span class="panel-title">Remote files</span>
+          <span class="panel-title">System files</span>
           <div class="file-actions">
             <button id="upButton" class="quiet-button" title="Parent directory">Up</button>
             <label class="upload-button">Upload<input id="uploadInput" type="file" multiple></label>
@@ -529,7 +622,7 @@ PAGE = r"""<!doctype html>
       <section class="panel terminal-panel">
         <div class="panel-head">
           <span class="panel-title">Terminal</span>
-          <span class="terminal-note">SSH · xterm-256color</span>
+          <span class="terminal-note">Local shell · xterm-256color</span>
         </div>
         <div id="terminal"></div>
       </section>
@@ -664,8 +757,8 @@ PAGE = r"""<!doctype html>
     async function showApp(info) {
       loginView.classList.add("hidden");
       appView.classList.remove("hidden");
-      document.getElementById("userLabel").textContent = `${info.username}@${info.host}`;
-      await loadFiles("/").catch(showError);
+      document.getElementById("userLabel").textContent = info.username;
+      await loadFiles(info.home || "/").catch(showError);
       connectTerminal();
     }
 
