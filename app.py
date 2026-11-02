@@ -579,8 +579,11 @@ PAGE = r"""<!doctype html>
     .terminal-panel { background: #080d16; }
     #terminal { flex: 1; min-height: 0; padding: 10px; }
     #terminal .xterm { height: 100%; }
-    #terminal .xterm-cursor-layer .xterm-cursor { opacity: 1 !important; z-index: 1; }
-    #terminal .xterm-cursor-layer .xterm-cursor-bar { border-left: 4px solid #00ff66 !important; }
+    #terminal .xterm-screen { position: relative; }
+    #terminal-cursor-overlay { position: absolute; z-index: 10; width: 4px; background: #00ff66; box-shadow: 0 0 5px #00ff66; pointer-events: none; }
+    #terminal .xterm-selection div { background: #355a83 !important; }
+    .terminal-tools { display: flex; align-items: center; gap: 10px; }
+    .quiet-button:disabled { opacity: .45; cursor: not-allowed; }
     .terminal-note { color: #64748b; font-size: 11px; }
     .empty { padding: 16px 10px; color: #64748b; font-size: 13px; }
     @media (max-width: 760px) {
@@ -632,7 +635,10 @@ PAGE = r"""<!doctype html>
       <section class="panel terminal-panel">
         <div class="panel-head">
           <span class="panel-title">Terminal</span>
-          <span class="terminal-note">Local shell · xterm-256color</span>
+          <div class="terminal-tools">
+            <button id="copyTerminalButton" class="quiet-button" type="button" disabled title="Select terminal text, then copy">Copy selection</button>
+            <span class="terminal-note">Local shell · xterm-256color</span>
+          </div>
         </div>
         <div id="terminal"></div>
       </section>
@@ -743,6 +749,29 @@ PAGE = r"""<!doctype html>
       fitAddon.fit();
       terminal.focus();
       terminal.element.addEventListener("pointerdown", () => terminal.focus());
+      const screen = terminal.element.querySelector(".xterm-screen");
+      const cursorOverlay = document.createElement("span");
+      cursorOverlay.id = "terminal-cursor-overlay";
+      cursorOverlay.setAttribute("aria-hidden", "true");
+      screen.append(cursorOverlay);
+
+      const updateCursorOverlay = () => {
+        const { cursorX, cursorY } = terminal.buffer.active;
+        if (!terminal.cols || !terminal.rows || !screen.clientWidth || !screen.clientHeight) return;
+        cursorOverlay.style.left = `${cursorX * screen.clientWidth / terminal.cols}px`;
+        cursorOverlay.style.top = `${cursorY * screen.clientHeight / terminal.rows}px`;
+        cursorOverlay.style.height = `${screen.clientHeight / terminal.rows}px`;
+      };
+      terminal.onCursorMove(updateCursorOverlay);
+      terminal.onRender(updateCursorOverlay);
+      new ResizeObserver(updateCursorOverlay).observe(screen);
+      updateCursorOverlay();
+
+      const copyButton = document.getElementById("copyTerminalButton");
+      terminal.onSelectionChange(() => {
+        copyButton.disabled = !terminal.hasSelection();
+      });
+
       const scheme = location.protocol === "https:" ? "wss:" : "ws:";
       terminalSocket = new WebSocket(`${scheme}//${location.host}/ws/terminal`);
       terminalSocket.addEventListener("open", () => {
@@ -760,6 +789,31 @@ PAGE = r"""<!doctype html>
       terminal.onData(data => {
         if (terminalSocket.readyState === WebSocket.OPEN) {
           terminalSocket.send(JSON.stringify({ type: "input", data }));
+        }
+      });
+      copyButton.addEventListener("click", async () => {
+        const selection = terminal.getSelection();
+        if (!selection) return;
+        try {
+          if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(selection);
+          } else {
+            const copyBuffer = document.createElement("textarea");
+            copyBuffer.value = selection;
+            copyBuffer.style.position = "fixed";
+            copyBuffer.style.opacity = "0";
+            document.body.append(copyBuffer);
+            copyBuffer.select();
+            const copied = document.execCommand("copy");
+            copyBuffer.remove();
+            if (!copied) throw new Error("Clipboard access was denied by the browser");
+          }
+          document.querySelector(".terminal-note").textContent = "Copied to clipboard";
+          setTimeout(() => {
+            document.querySelector(".terminal-note").textContent = "Local shell · xterm-256color";
+          }, 1500);
+        } catch (error) {
+          document.querySelector(".terminal-note").textContent = error.message;
         }
       });
       window.addEventListener("resize", () => {
