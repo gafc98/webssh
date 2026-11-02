@@ -579,8 +579,8 @@ PAGE = r"""<!doctype html>
     .terminal-panel { background: #080d16; }
     #terminal { flex: 1; min-height: 0; padding: 10px; }
     #terminal .xterm { height: 100%; }
-    #terminal .xterm-cursor-layer .xterm-cursor { z-index: 1; }
-    #terminal .xterm-cursor-layer .xterm-cursor-bar { border-left: 4px solid #fff !important; }
+    #terminal .xterm-cursor-layer .xterm-cursor { opacity: 1 !important; z-index: 1; }
+    #terminal .xterm-cursor-layer .xterm-cursor-bar { border-left: 4px solid #00ff66 !important; }
     .terminal-note { color: #64748b; font-size: 11px; }
     .empty { padding: 16px 10px; color: #64748b; font-size: 13px; }
     @media (max-width: 760px) {
@@ -728,14 +728,14 @@ PAGE = r"""<!doctype html>
 
     function connectTerminal() {
       terminal = new Terminal({
-        cursorBlink: true,
+        cursorBlink: false,
         cursorStyle: "bar",
         cursorWidth: 4,
         cursorInactiveStyle: "bar",
         fontFamily: '"DejaVu Sans Mono", "Liberation Mono", monospace',
         fontSize: 14,
         lineHeight: 1.25,
-        theme: { background: "#080d16", foreground: "#dbe4f0", cursor: "#ffffff", cursorAccent: "#080d16" }
+        theme: { background: "#080d16", foreground: "#dbe4f0", cursor: "#00ff66", cursorAccent: "#080d16" }
       });
       fitAddon = new FitAddon.FitAddon();
       terminal.loadAddon(fitAddon);
