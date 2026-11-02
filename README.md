@@ -43,4 +43,4 @@ The `.env` file is optional: settings can also be supplied as environment variab
 
 Do not expose this service directly to the public internet. The terminal runs arbitrary commands with the WebSSH service account's full permissions, and the file manager accesses files with those same permissions. Use a dedicated non-root account if you want to limit access. PAM checks the password locally; it is not saved. Session records and terminal processes are held in memory and idle sessions expire after 30 minutes. Run a single Uvicorn worker because session state is process-local.
 
-The browser terminal loads xterm.js from jsDelivr, so clients need access to that CDN. Files can be uploaded up to 100 MB each.
+The browser terminal and JetBrains Mono font load from jsDelivr, so clients need access to that CDN. Files can be uploaded up to 100 MB each.

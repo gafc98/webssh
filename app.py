@@ -531,6 +531,7 @@ PAGE = r"""<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>WebSSH</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/jetbrains-mono@5.2.6/latin-400.css">
   <style nonce="__NONCE__">
     :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; background: #0b1020; color: #e5e7eb; }
     * { box-sizing: border-box; }
@@ -737,7 +738,7 @@ PAGE = r"""<!doctype html>
         cursorStyle: "bar",
         cursorWidth: 4,
         cursorInactiveStyle: "bar",
-        fontFamily: 'ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace',
+        fontFamily: '"JetBrains Mono", monospace',
         fontSize: 14,
         lineHeight: 1.25,
         theme: {
@@ -745,9 +746,9 @@ PAGE = r"""<!doctype html>
           foreground: "#dbe4f0",
           cursor: "#ffffff",
           cursorAccent: "#080d16",
-          selectionBackground: "rgba(68, 125, 190, 0.75)",
+          selectionBackground: "#2864a3",
           selectionForeground: "#ffffff",
-          selectionInactiveBackground: "rgba(68, 125, 190, 0.75)"
+          selectionInactiveBackground: "#2864a3"
         }
       });
       fitAddon = new FitAddon.FitAddon();
@@ -764,18 +765,12 @@ PAGE = r"""<!doctype html>
 
       const updateCursorOverlay = () => {
         requestAnimationFrame(() => {
-          const canvas = screen.querySelector("canvas");
-          if (!canvas || !terminal.cols || !terminal.rows) return;
-          const screenRect = screen.getBoundingClientRect();
-          const canvasRect = canvas.getBoundingClientRect();
-          if (!screenRect.width || !screenRect.height || !canvasRect.width || !canvasRect.height) return;
-          const scaleX = screen.offsetWidth ? screenRect.width / screen.offsetWidth : 1;
-          const scaleY = screen.offsetHeight ? screenRect.height / screen.offsetHeight : 1;
+          if (!terminal.cols || !terminal.rows || !screen.clientWidth || !screen.clientHeight) return;
           const { cursorX, cursorY } = terminal.buffer.active;
-          const cellWidth = canvasRect.width / terminal.cols / scaleX;
-          const cellHeight = canvasRect.height / terminal.rows / scaleY;
-          cursorOverlay.style.left = `${(canvasRect.left - screenRect.left) / scaleX + cursorX * cellWidth}px`;
-          cursorOverlay.style.top = `${(canvasRect.top - screenRect.top) / scaleY + cursorY * cellHeight}px`;
+          const cellWidth = screen.clientWidth / terminal.cols;
+          const cellHeight = screen.clientHeight / terminal.rows;
+          cursorOverlay.style.left = `${cursorX * cellWidth}px`;
+          cursorOverlay.style.top = `${cursorY * cellHeight}px`;
           cursorOverlay.style.height = `${cellHeight}px`;
         });
       };
@@ -798,7 +793,9 @@ PAGE = r"""<!doctype html>
       });
       terminalSocket.addEventListener("message", event => {
         const message = JSON.parse(event.data);
-        if (message.type === "output") terminal.write(message.data);
+        if (message.type === "output") {
+          terminal.write(message.data, updateCursorOverlay);
+        }
       });
       terminalSocket.addEventListener("close", () => {
         document.getElementById("connectionLabel").textContent = "Terminal disconnected";
@@ -836,9 +833,15 @@ PAGE = r"""<!doctype html>
       window.addEventListener("resize", () => {
         if (!fitAddon || !terminal) return;
         fitAddon.fit();
+        updateCursorOverlay();
         if (terminalSocket.readyState === WebSocket.OPEN) {
           terminalSocket.send(JSON.stringify({ type: "resize", cols: terminal.cols, rows: terminal.rows }));
         }
+      });
+      document.fonts.load('14px "JetBrains Mono"').then(() => {
+        fitAddon.fit();
+        terminal.refresh(0, terminal.rows - 1);
+        updateCursorOverlay();
       });
     }
 
