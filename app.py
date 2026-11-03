@@ -768,7 +768,7 @@ PAGE = r"""<!doctype html>
       });
       fitAddon = new FitAddon.FitAddon();
       terminal.loadAddon(fitAddon);
-      withStyleNonce(() => terminal.open(document.getElementByID("terminal")));
+      withStyleNonce(() => terminal.open(document.getElementById("terminal")));
       fitAddon.fit();
       terminal.focus();
       terminal.element.addEventListener("pointerdown", () => terminal.focus());
