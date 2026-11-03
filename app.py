@@ -191,6 +191,7 @@ async def index(request: Request) -> HTMLResponse:
         "default-src 'self'; "
         f"script-src 'self' https://cdn.jsdelivr.net 'nonce-{nonce}'; "
         f"style-src 'self' https://cdn.jsdelivr.net 'nonce-{nonce}'; "
+        "style-src-attr 'unsafe-inline'; "
         "font-src 'self' https://cdn.jsdelivr.net data:; "
         "connect-src 'self' ws: wss:; "
         "img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
@@ -580,8 +581,6 @@ PAGE = r"""<!doctype html>
     .terminal-panel { background: #080d16; }
     #terminal { flex: 1; min-height: 0; padding: 10px; }
     #terminal .xterm { height: 100%; }
-    #terminal .xterm-screen { position: relative; }
-    #terminal-cursor-overlay { position: absolute; z-index: 10; width: 2px; background: #fff; pointer-events: none; }
     .terminal-tools { display: flex; align-items: center; gap: 10px; }
     .quiet-button:disabled { opacity: .45; cursor: not-allowed; }
     .terminal-note { color: #64748b; font-size: 11px; }
@@ -646,6 +645,7 @@ PAGE = r"""<!doctype html>
   </main>
   <script nonce="__NONCE__">
     const csrfToken = "__CSRF_TOKEN__";
+    const styleNonce = document.currentScript ? document.currentScript.nonce : "";
     const loginView = document.getElementById("loginView");
     const appView = document.getElementById("appView");
     const loginError = document.getElementById("loginError");
@@ -655,6 +655,20 @@ PAGE = r"""<!doctype html>
     let terminal;
     let fitAddon;
     let terminalSocket;
+
+    function withStyleNonce(callback) {
+      const createElement = document.createElement;
+      document.createElement = function (tagName, options) {
+        const element = createElement.call(this, tagName, options);
+        if (element isinstanceof HTMLStyleElement) element.setAttribute("nonce", styleNonce);
+        return element;
+      };
+      try {
+        callback();
+      } finally {
+        document.createElement = createElement;
+      }
+    }
 
     async function api(url, options = {}) {
       const response = await fetch(url, {
@@ -732,7 +746,8 @@ PAGE = r"""<!doctype html>
       fileList.append(message);
     }
 
-    function connectTerminal() {
+    async function connectTerminal() {
+      await document.fonts.load('14px "JetBrains Mono"').catch(() => {});
       terminal = new Terminal({
         cursorBlink: false,
         cursorStyle: "bar",
@@ -753,31 +768,10 @@ PAGE = r"""<!doctype html>
       });
       fitAddon = new FitAddon.FitAddon();
       terminal.loadAddon(fitAddon);
-      terminal.open(document.getElementById("terminal"));
+      withStyleNonce(() => terminal.open(document.getElementByID("terminal")));
       fitAddon.fit();
       terminal.focus();
       terminal.element.addEventListener("pointerdown", () => terminal.focus());
-      const screen = terminal.element.querySelector(".xterm-screen");
-      const cursorOverlay = document.createElement("span");
-      cursorOverlay.id = "terminal-cursor-overlay";
-      cursorOverlay.setAttribute("aria-hidden", "true");
-      screen.append(cursorOverlay);
-
-      const updateCursorOverlay = () => {
-        requestAnimationFrame(() => {
-          if (!terminal.cols || !terminal.rows || !screen.clientWidth || !screen.clientHeight) return;
-          const { cursorX, cursorY } = terminal.buffer.active;
-          const cellWidth = screen.clientWidth / terminal.cols;
-          const cellHeight = screen.clientHeight / terminal.rows;
-          cursorOverlay.style.left = `${cursorX * cellWidth}px`;
-          cursorOverlay.style.top = `${cursorY * cellHeight}px`;
-          cursorOverlay.style.height = `${cellHeight}px`;
-        });
-      };
-      terminal.onCursorMove(updateCursorOverlay);
-      terminal.onRender(updateCursorOverlay);
-      new ResizeObserver(updateCursorOverlay).observe(screen);
-      updateCursorOverlay();
 
       const copyButton = document.getElementById("copyTerminalButton");
       terminal.onSelectionChange(() => {
@@ -794,7 +788,7 @@ PAGE = r"""<!doctype html>
       terminalSocket.addEventListener("message", event => {
         const message = JSON.parse(event.data);
         if (message.type === "output") {
-          terminal.write(message.data, updateCursorOverlay);
+          terminal.write(message.data);
         }
       });
       terminalSocket.addEventListener("close", () => {
@@ -833,15 +827,9 @@ PAGE = r"""<!doctype html>
       window.addEventListener("resize", () => {
         if (!fitAddon || !terminal) return;
         fitAddon.fit();
-        updateCursorOverlay();
         if (terminalSocket.readyState === WebSocket.OPEN) {
           terminalSocket.send(JSON.stringify({ type: "resize", cols: terminal.cols, rows: terminal.rows }));
         }
-      });
-      document.fonts.load('14px "JetBrains Mono"').then(() => {
-        fitAddon.fit();
-        terminal.refresh(0, terminal.rows - 1);
-        updateCursorOverlay();
       });
     }
 
@@ -851,7 +839,7 @@ PAGE = r"""<!doctype html>
       document.getElementById("userLabel").textContent = info.username;
       homePath = info.home || "/";
       await loadFiles(homePath).catch(showError);
-      connectTerminal();
+      await connectTerminal();
     }
 
     document.getElementById("loginForm").addEventListener("submit", async event => {
