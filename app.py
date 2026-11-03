@@ -581,6 +581,17 @@ PAGE = r"""<!doctype html>
     .terminal-panel { background: #080d16; }
     #terminal { flex: 1; min-height: 0; padding: 10px; }
     #terminal .xterm { height: 100%; }
+    #terminal .xterm-cursor-bar { position: relative; box-shadow: none; }
+    #terminal .xterm-cursor-bar::after {
+      content: "";
+      position: absolute;
+      top: 2px;
+      bottom: 2px;
+      left: 2px;
+      width: 2px;
+      background: #fff;
+      pointer-events: none;
+    }
     .terminal-tools { display: flex; align-items: center; gap: 10px; }
     .quiet-button:disabled { opacity: .45; cursor: not-allowed; }
     .terminal-note { color: #64748b; font-size: 11px; }
