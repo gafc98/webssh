@@ -635,7 +635,6 @@ PAGE = r"""<!doctype html>
         <div class="panel-head">
           <span class="panel-title">Terminal</span>
           <div class="terminal-tools">
-            <button id="copyTerminalButton" class="quiet-button" type="button" disabled title="Select terminal text, then copy">Copy selection</button>
             <span class="terminal-note">Local shell · xterm-256color</span>
           </div>
         </div>
@@ -751,7 +750,7 @@ PAGE = r"""<!doctype html>
       terminal = new Terminal({
         cursorBlink: false,
         cursorStyle: "bar",
-        cursorWidth: 4,
+        cursorWidth: 2,
         cursorInactiveStyle: "bar",
         fontFamily: '"JetBrains Mono", monospace',
         fontSize: 14,
@@ -773,11 +772,6 @@ PAGE = r"""<!doctype html>
       terminal.focus();
       terminal.element.addEventListener("pointerdown", () => terminal.focus());
 
-      const copyButton = document.getElementById("copyTerminalButton");
-      terminal.onSelectionChange(() => {
-        copyButton.disabled = !terminal.hasSelection();
-      });
-
       const scheme = location.protocol === "https:" ? "wss:" : "ws:";
       terminalSocket = new WebSocket(`${scheme}//${location.host}/ws/terminal`);
       terminalSocket.addEventListener("open", () => {
@@ -797,31 +791,6 @@ PAGE = r"""<!doctype html>
       terminal.onData(data => {
         if (terminalSocket.readyState === WebSocket.OPEN) {
           terminalSocket.send(JSON.stringify({ type: "input", data }));
-        }
-      });
-      copyButton.addEventListener("click", async () => {
-        const selection = terminal.getSelection();
-        if (!selection) return;
-        try {
-          if (navigator.clipboard && window.isSecureContext) {
-            await navigator.clipboard.writeText(selection);
-          } else {
-            const copyBuffer = document.createElement("textarea");
-            copyBuffer.value = selection;
-            copyBuffer.style.position = "fixed";
-            copyBuffer.style.opacity = "0";
-            document.body.append(copyBuffer);
-            copyBuffer.select();
-            const copied = document.execCommand("copy");
-            copyBuffer.remove();
-            if (!copied) throw new Error("Clipboard access was denied by the browser");
-          }
-          document.querySelector(".terminal-note").textContent = "Copied to clipboard";
-          setTimeout(() => {
-            document.querySelector(".terminal-note").textContent = "Local shell · xterm-256color";
-          }, 1500);
-        } catch (error) {
-          document.querySelector(".terminal-note").textContent = error.message;
         }
       });
       window.addEventListener("resize", () => {
