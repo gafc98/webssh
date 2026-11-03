@@ -660,7 +660,7 @@ PAGE = r"""<!doctype html>
       const createElement = document.createElement;
       document.createElement = function (tagName, options) {
         const element = createElement.call(this, tagName, options);
-        if (element isinstanceof HTMLStyleElement) element.setAttribute("nonce", styleNonce);
+        if (element instanceof HTMLStyleElement) element.setAttribute("nonce", styleNonce);
         return element;
       };
       try {
