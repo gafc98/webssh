@@ -633,6 +633,7 @@ PAGE = r"""<!doctype html>
           <span class="panel-title">System files</span>
           <div class="file-actions">
             <button id="upButton" class="quiet-button" title="Parent directory">Up</button>
+            <button id="homeButton" class="quiet-button" type="button" title="Home directory">Home</button>
             <button id="uploadButton" class="quiet-button" type="button">Upload</button>
             <input id="uploadInput" class="hidden" type="file" multiple>
           </div>
@@ -842,6 +843,10 @@ PAGE = r"""<!doctype html>
 
     document.getElementById("upButton").addEventListener("click", () => {
       if (currentPath !== "/") loadFiles(currentPath.slice(0, currentPath.lastIndexOf("/")) || "/").catch(showError);
+    });
+
+    document.getElementById("homeButton").addEventListener("click", () => {
+      loadFiles(homePath).catch(showError);
     });
 
     document.getElementById("pathForm").addEventListener("submit", event => {
