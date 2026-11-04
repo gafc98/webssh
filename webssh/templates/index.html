@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="__CSRF_TOKEN__">
+  <title>WebSSH</title>
+  <link rel="stylesheet" href="/static/vendor/xterm/xterm.css">
+  <link rel="stylesheet" href="/static/css/app.css">
+  <script src="/static/vendor/xterm/xterm.js" defer></script>
+  <script src="/static/vendor/xterm/addon-fit.js" defer></script>
+  <script src="/static/js/app.js" nonce="__NONCE__" defer></script>
+</head>
+<body>
+  <main id="loginView" class="login-wrap hidden">
+    <section class="login-card">
+      <div class="brand"><div class="brand-mark">&gt;_</div><span>WebSSH</span></div>
+      <p class="muted">Sign in with the Linux account running this app. Your password is checked locally and never stored.</p>
+      <form id="loginForm">
+        <div class="field"><label for="username">Linux username</label><input id="username" name="username" autocomplete="username" required autofocus></div>
+        <div class="field"><label for="password">Linux password</label><input id="password" name="password" type="password" autocomplete="current-password" required></div>
+        <button class="primary" type="submit">Sign in</button>
+        <div id="loginError" class="error" role="alert"></div>
+      </form>
+    </section>
+  </main>
+
+  <main id="appView" class="app-shell hidden">
+    <header>
+      <div class="brand"><div class="brand-mark">&gt;_</div><span>WebSSH</span></div>
+      <div id="stats" class="stats" aria-label="System status"></div>
+      <div class="header-meta">
+        <button id="versionButton" class="version hidden" type="button" title="Check for updates"></button>
+        <button id="updateButton" class="update-button hidden" type="button"></button>
+        <span id="userLabel"></span>
+        <button id="logoutButton" class="quiet-button" type="button">Disconnect</button>
+      </div>
+    </header>
+
+    <section class="workspace">
+      <aside class="panel">
+        <div class="panel-head">
+          <span class="panel-title">Files</span>
+          <div class="file-actions">
+            <button id="upButton" class="quiet-button" type="button" title="Parent directory">Up</button>
+            <button id="homeButton" class="quiet-button" type="button" title="Home directory">Home</button>
+            <button id="newFolderButton" class="quiet-button" type="button" title="New folder">New</button>
+            <button id="uploadButton" class="quiet-button" type="button" title="Upload files">Upload</button>
+            <input id="uploadInput" class="hidden" type="file" multiple>
+          </div>
+        </div>
+        <form id="pathForm" class="path-bar">
+          <input id="pathInput" class="path-input" type="text" value="/" aria-label="Current directory path" autocomplete="off" spellcheck="false">
+        </form>
+        <div id="clipboardBar" class="clipboard-bar hidden">
+          <span id="clipboardLabel"></span>
+          <button id="pasteButton" class="quiet-button" type="button">Paste here</button>
+          <button id="clearClipboardButton" class="icon-button" type="button" title="Cancel" aria-label="Cancel">✕</button>
+        </div>
+        <div id="fileStatus" class="file-status hidden" role="status"></div>
+        <div id="fileList" class="file-list"><div class="empty">Loading files…</div></div>
+      </aside>
+
+      <section class="panel terminal-panel">
+        <div class="panel-head terminal-head">
+          <div id="terminalTabs" class="tabs" aria-label="Terminals"></div>
+          <button id="newTerminalButton" class="icon-button" type="button" title="New terminal" aria-label="New terminal">+</button>
+        </div>
+        <div id="terminalStack" class="terminal-stack">
+          <div id="terminalEmpty" class="terminal-empty hidden">
+            <p>No terminals are open.</p>
+            <button id="emptyNewTerminalButton" class="quiet-button" type="button">Open a terminal</button>
+          </div>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <div id="overlay" class="overlay hidden" role="alertdialog" aria-live="assertive">
+    <div class="overlay-card">
+      <p id="overlayMessage"></p>
+      <button id="overlayDismiss" class="quiet-button hidden" type="button">Dismiss</button>
+    </div>
+  </div>
+</body>
+</html>

@@ -1,9 +1,12 @@
 #!/bin/bash
+# Starts WebSSH in the background. Override the bind address with WEBSSH_HOST / WEBSSH_PORT.
 cd "$(dirname "$0")" || exit 1
 
 PID_FILE="uvicorn.pid"
 LOG_FILE="uvicorn.log"
-UVICORN_PATTERN="[u]vicorn app:app --host 127.0.0.1 --port 8000"
+HOST="${WEBSSH_HOST:-127.0.0.1}"
+PORT="${WEBSSH_PORT:-8000}"
+UVICORN_PATTERN="[u]vicorn webssh.main:app --host $HOST --port $PORT"
 
 if [ -f "$PID_FILE" ]; then
     PID=$(cat "$PID_FILE")
@@ -30,14 +33,19 @@ else
     exit 1
 fi
 
-WEBSSH_COOKIE_SECURE=false nohup "$PYTHON_BIN" -m uvicorn app:app \
-    --host 127.0.0.1 --port 8000 > "$LOG_FILE" 2>&1 &
+# Plain-HTTP local use needs non-secure cookies unless .env or the environment says otherwise.
+if [ -z "${WEBSSH_COOKIE_SECURE:-}" ] && ! grep -qs '^WEBSSH_COOKIE_SECURE=' .env; then
+    export WEBSSH_COOKIE_SECURE=false
+fi
+
+nohup "$PYTHON_BIN" -m uvicorn webssh.main:app \
+    --host "$HOST" --port "$PORT" > "$LOG_FILE" 2>&1 &
 PID=$!
 echo "$PID" > "$PID_FILE"
 
 sleep 1
 if kill -0 "$PID" 2>/dev/null; then
-    echo "WebSSH started at http://127.0.0.1:8000 (PID: $PID)."
+    echo "WebSSH started at http://$HOST:$PORT (PID: $PID)."
     echo "Logs are writing to $LOG_FILE."
 else
     rm -f "$PID_FILE"
