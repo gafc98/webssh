@@ -33,6 +33,8 @@ if not SESSION_SECRET:
 COOKIE_SECURE = os.environ.get("WEBSSH_COOKIE_SECURE", "1").lower() not in {"0", "false", "no"}
 SESSION_IDLE_SECONDS = 30 * 60
 MAX_UPLOAD_BYTES = 100 * 1024 * 1024
+IO_CHUNK_BYTES = 1024 * 1024
+PTY_READ_BYTES = 64 * 1024
 
 
 @dataclass
@@ -258,45 +260,49 @@ async def logout(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
+def scan_directory(directory: str) -> list[dict[str, Any]]:
+    files = []
+    with os.scandir(directory) as entries:
+        for entry in entries:
+            name = entry.name
+            if not name or name in {".", ".."}:
+                continue
+            try:
+                metadata = entry.stat(follow_symlinks=False)
+            except OSError as exc:
+                logger.info("Unable to inspect local file %s: %s", entry.path, exc)
+                continue
+            mode = metadata.st_mode
+            if stat.S_ISDIR(mode):
+                kind = "directory"
+            elif stat.S_ISLNK(mode):
+                kind = "link"
+            elif stat.S_ISREG(mode):
+                kind = "file"
+            else:
+                kind = "other"
+            files.append(
+                {
+                    "name": name,
+                    "path": posixpath.join(directory, name),
+                    "type": kind,
+                    "size": metadata.st_size,
+                    "modified": metadata.st_mtime,
+                }
+            )
+    files.sort(key=lambda item: (item["type"] != "directory", item["name"].casefold()))
+    return files
+
+
 @app.get("/api/files")
 async def list_files(request: Request, path: str = "/") -> dict[str, Any]:
     get_local_session(request)
     directory = normalize_local_path(path)
     try:
-        entries = await asyncio.to_thread(lambda: list(os.scandir(directory)))
+        files = await asyncio.to_thread(scan_directory, directory)
     except OSError as exc:
         logger.exception("Unable to list local directory %s", directory)
         raise local_file_error(exc) from exc
-
-    files = []
-    for entry in entries:
-        name = entry.name
-        if not name or name in {".", ".."}:
-            continue
-        try:
-            metadata = entry.stat(follow_symlinks=False)
-        except OSError as exc:
-            logger.info("Unable to inspect local file %s: %s", entry.path, exc)
-            continue
-        mode = metadata.st_mode
-        if stat.S_ISDIR(mode):
-            kind = "directory"
-        elif stat.S_ISLNK(mode):
-            kind = "link"
-        elif stat.S_ISREG(mode):
-            kind = "file"
-        else:
-            kind = "other"
-        files.append(
-            {
-                "name": name,
-                "path": posixpath.join(directory, name),
-                "type": kind,
-                "size": metadata.st_size,
-                "modified": metadata.st_mtime,
-            }
-        )
-    files.sort(key=lambda item: (item["type"] != "directory", item["name"].casefold()))
     return {"path": directory, "entries": files}
 
 
@@ -316,7 +322,7 @@ async def download_file(request: Request, path: str) -> StreamingResponse:
         try:
             try:
                 while True:
-                    chunk = await asyncio.to_thread(local_file.read, 64 * 1024)
+                    chunk = await asyncio.to_thread(local_file.read, IO_CHUNK_BYTES)
                     if not chunk:
                         break
                     local.last_activity = time.monotonic()
@@ -336,6 +342,16 @@ async def download_file(request: Request, path: str) -> StreamingResponse:
     )
 
 
+def copy_upload(source: Any, target_path: Path) -> None:
+    total_bytes = 0
+    with open(target_path, "xb") as target:
+        while chunk := source.read(IO_CHUNK_BYTES):
+            total_bytes += len(chunk)
+            if total_bytes > MAX_UPLOAD_BYTES:
+                raise HTTPException(status_code=413, detail="File exceeds the 100 MB upload limit")
+            target.write(chunk)
+
+
 @app.post("/api/upload")
 async def upload_file(
     request: Request,
@@ -352,19 +368,9 @@ async def upload_file(
 
     destination = Path(directory) / filename
     temporary_path = Path(directory) / f".webssh-upload-{secrets.token_hex(16)}"
-    total_bytes = 0
     try:
-        target = await asyncio.to_thread(open, temporary_path, "xb")
-        try:
-            while chunk := await file.read(64 * 1024):
-                total_bytes += len(chunk)
-                if total_bytes > MAX_UPLOAD_BYTES:
-                    raise HTTPException(status_code=413, detail="File exceeds the 100 MB upload limit")
-                await asyncio.to_thread(target.write, chunk)
-            await asyncio.to_thread(target.close)
-        except BaseException:
-            await asyncio.to_thread(target.close)
-            raise
+        await file.seek(0)
+        await asyncio.to_thread(copy_upload, file.file, temporary_path)
         await asyncio.to_thread(os.replace, temporary_path, destination)
     except HTTPException:
         try:
@@ -419,7 +425,7 @@ async def terminal(websocket: WebSocket) -> None:
             output_paused = True
             return
         try:
-            output_queue.put_nowait(os.read(master_fd, 4096))
+            output_queue.put_nowait(os.read(master_fd, PTY_READ_BYTES))
         except BlockingIOError:
             return
         except OSError as exc:
@@ -475,7 +481,8 @@ async def terminal(websocket: WebSocket) -> None:
                     output_paused = False
                     loop.add_reader(master_fd, read_terminal)
                 local.last_activity = time.monotonic()
-                await websocket.send_json({"type": "output", "data": output.decode("utf-8", errors="replace")})
+                # Raw bytes: xterm.js decodes UTF-8 incrementally, so split multibyte chars stay intact.
+                await websocket.send_bytes(output)
                 output_task = asyncio.create_task(output_queue.get())
 
             if input_task in done:
@@ -716,8 +723,7 @@ PAGE = r"""<!doctype html>
       if (!result.entries.length) {
         fileList.innerHTML = '<div class="empty">This directory is empty.</div>';
         return;
-      }
-      for (const entry of result.entries) {
+      }        const fragment = document.createDocumentFragment();      for (const entry of result.entries) {
         const row = document.createElement("div");
         row.className = "file-row";
         const icon = document.createElement("span");
@@ -745,8 +751,9 @@ PAGE = r"""<!doctype html>
           });
           row.append(download);
         }
-        fileList.append(row);
+        fragment.append(row);
       }
+      fileList.append(fragment);
     }
 
     function showError(error) {
@@ -786,16 +793,14 @@ PAGE = r"""<!doctype html>
 
       const scheme = location.protocol === "https:" ? "wss:" : "ws:";
       terminalSocket = new WebSocket(`${scheme}//${location.host}/ws/terminal`);
+      terminalSocket.binaryType = "arraybuffer";
       terminalSocket.addEventListener("open", () => {
         fitAddon.fit();
-        terminalSocket.send(JSON.stringify({ type: "resize", cols: terminal.cols, rows: terminal.rows }));
+        sendResize(terminal.cols, terminal.rows);
         terminal.focus();
       });
       terminalSocket.addEventListener("message", event => {
-        const message = JSON.parse(event.data);
-        if (message.type === "output") {
-          terminal.write(message.data);
-        }
+        if (event.data instanceof ArrayBuffer) terminal.write(new Uint8Array(event.data));
       });
       terminalSocket.addEventListener("close", () => {
         document.getElementById("connectionLabel").textContent = "Terminal disconnected";
@@ -805,14 +810,23 @@ PAGE = r"""<!doctype html>
           terminalSocket.send(JSON.stringify({ type: "input", data }));
         }
       });
-      window.addEventListener("resize", () => {
-        if (!fitAddon || !terminal) return;
-        fitAddon.fit();
-        if (terminalSocket.readyState === WebSocket.OPEN) {
-          terminalSocket.send(JSON.stringify({ type: "resize", cols: terminal.cols, rows: terminal.rows }));
-        }
-      });
+      terminal.onResize(({ cols, rows }) => sendResize(cols, rows));
     }
+
+    function sendResize(cols, rows) {
+      if (terminalSocket && terminalSocket.readyState === WebSocket.OPEN) {
+        terminalSocket.send(JSON.stringify({ type: "resize", cols, rows }));
+      }
+    }
+
+    let resizeFrame = 0;
+    window.addEventListener("resize", () => {
+      if (resizeFrame) return;
+      resizeFrame = requestAnimationFrame(() => {
+        resizeFrame = 0;
+        if (fitAddon && terminal) fitAddon.fit();
+      });
+    });
 
     async function showApp(info) {
       loginView.classList.add("hidden");
@@ -894,6 +908,8 @@ PAGE = r"""<!doctype html>
       } finally {
         if (terminalSocket) terminalSocket.close();
         if (terminal) terminal.dispose();
+        terminal = null;
+        fitAddon = null;
         showLogin();
       }
     });
