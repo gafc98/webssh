@@ -13,7 +13,8 @@ from .routes import auth, files, system, terminals
 from .sessions import end_all_sessions, housekeeping
 
 
-INDEX_TEMPLATE = (TEMPLATE_DIR / "index.html").read_text(encoding="utf-8")
+INDEX_TEMPLATE = TEMPLATE_DIR / "index.html"
+VERSIONED_ASSETS = (STATIC_DIR / "js" / "app.js", STATIC_DIR / "css" / "app.css")
 
 
 @asynccontextmanager
@@ -52,14 +53,21 @@ async def add_security_headers(request: Request, call_next: Any) -> Any:
     return response
 
 
+# Sync route (runs in the threadpool): the template is re-read so HTML and assets never drift apart.
 @app.get("/", response_class=HTMLResponse)
-async def index(request: Request) -> HTMLResponse:
+def index(request: Request) -> HTMLResponse:
     csrf_token = request.session.get("csrf_token")
     if not isinstance(csrf_token, str):
         csrf_token = secrets.token_urlsafe(32)
         request.session["csrf_token"] = csrf_token
     nonce = secrets.token_urlsafe(18)
-    html = INDEX_TEMPLATE.replace("__CSRF_TOKEN__", csrf_token).replace("__NONCE__", nonce)
+    version = str(max(int(asset.stat().st_mtime) for asset in VERSIONED_ASSETS))
+    html = (
+        INDEX_TEMPLATE.read_text(encoding="utf-8")
+        .replace("__CSRF_TOKEN__", csrf_token)
+        .replace("__NONCE__", nonce)
+        .replace("__VERSION__", version)
+    )
     response = HTMLResponse(html)
     # xterm.js injects <style> elements at runtime, which the nonce allows.
     response.headers["Content-Security-Policy"] = (
