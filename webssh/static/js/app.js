@@ -113,25 +113,99 @@ async function showApp(info) {
   state.homePath = info.home || "/";
   startPolling();
   await loadFiles(state.homePath).catch(error => setFileStatus(error.message));
-  await initTerminals().catch(error => showOverlay(error.message, true));
+  await initTerminals().catch(error => showMessage("Terminal unavailable", error.message));
 }
 
 function handleSignedOut(message = "") {
+  settleModal(null);
   stopPolling();
   disposeAllTerminals();
   setClipboard(null);
   showLogin(message);
 }
 
-function showOverlay(message, dismissable = false) {
+function showOverlay(message) {
   $("overlayMessage").textContent = message;
-  $("overlayDismiss").classList.toggle("hidden", !dismissable);
   $("overlay").classList.remove("hidden");
-  if (dismissable) $("overlayDismiss").focus();
 }
 
 function hideOverlay() {
   $("overlay").classList.add("hidden");
+}
+
+/* ---------- Dialogs ---------- */
+
+const modal = $("modal");
+const modalInput = $("modalInput");
+let modalState = null;
+
+function openModal({
+  title,
+  message = "",
+  items = [],
+  input = null,
+  placeholder = "",
+  validate = null,
+  confirmLabel = "OK",
+  cancelLabel = "Cancel",
+  danger = false
+}) {
+  settleModal(null);
+  $("modalTitle").textContent = title;
+  $("modalMessage").textContent = message;
+  $("modalMessage").classList.toggle("hidden", !message);
+  $("modalList").replaceChildren(
+    ...items.map(text => {
+      const item = document.createElement("li");
+      item.textContent = text;
+      item.title = text;
+      return item;
+    })
+  );
+  $("modalList").classList.toggle("hidden", !items.length);
+  modalInput.classList.toggle("hidden", input === null);
+  modalInput.value = input ?? "";
+  modalInput.placeholder = placeholder;
+  $("modalError").textContent = "";
+  $("modalConfirm").textContent = confirmLabel;
+  $("modalConfirm").classList.toggle("danger", danger);
+  $("modalCancel").textContent = cancelLabel || "";
+  $("modalCancel").classList.toggle("hidden", !cancelLabel);
+
+  modal.showModal();
+  if (input !== null) {
+    modalInput.focus();
+    // Preselect the base name so typing replaces it but keeps the extension.
+    const dot = modalInput.value.lastIndexOf(".");
+    modalInput.setSelectionRange(0, dot > 0 ? dot : modalInput.value.length);
+  } else {
+    (danger ? $("modalCancel") : $("modalConfirm")).focus();
+  }
+  return new Promise(resolve => {
+    modalState = { resolve, withInput: input !== null, validate };
+  });
+}
+
+function settleModal(value) {
+  const current = modalState;
+  modalState = null;
+  if (modal.open) modal.close();
+  if (current) current.resolve(value);
+}
+
+const confirmDialog = options => openModal(options).then(Boolean);
+const promptDialog = ({ value = "", ...options }) => openModal({ ...options, input: value });
+
+function showMessage(title, message = "") {
+  hideOverlay();
+  return openModal({ title, message, cancelLabel: null });
+}
+
+function nameError(name) {
+  if (!name) return "Enter a name.";
+  if (name === "." || name === "..") return "That name is reserved.";
+  if (name.includes("/")) return "Names cannot contain “/”.";
+  return "";
 }
 
 /* ---------- File manager ---------- */
@@ -228,21 +302,40 @@ function downloadFile(entry) {
   link.click();
 }
 
-function renameEntry(entry) {
-  const name = prompt(`Rename "${entry.name}" to:`, entry.name);
+async function renameEntry(entry) {
+  const name = await promptDialog({
+    title: `Rename ${entry.type === "directory" ? "folder" : "file"}`,
+    value: entry.name,
+    validate: nameError,
+    confirmLabel: "Rename"
+  });
   if (!name || name === entry.name) return;
   runFileAction(() => postJSON("/api/files/rename", { path: entry.path, name }));
 }
 
-function deleteEntry(entry) {
-  const what = entry.type === "directory" ? `the folder "${entry.name}" and everything in it` : `"${entry.name}"`;
-  if (!confirm(`Delete ${what}? This cannot be undone.`)) return;
+async function deleteEntry(entry) {
+  const isDirectory = entry.type === "directory";
+  const confirmed = await confirmDialog({
+    title: `Delete ${isDirectory ? "folder" : "file"}?`,
+    message: isDirectory
+      ? `“${entry.name}” and everything inside it will be permanently deleted.`
+      : `“${entry.name}” will be permanently deleted.`,
+    confirmLabel: "Delete",
+    danger: true
+  });
+  if (!confirmed) return;
   if (state.clipboard && state.clipboard.path === entry.path) setClipboard(null);
   runFileAction(() => postJSON("/api/files/delete", { path: entry.path }), `Deleted ${entry.name}`);
 }
 
-function createFolder() {
-  const name = prompt("New folder name:");
+async function createFolder() {
+  const name = await promptDialog({
+    title: "New folder",
+    message: `Create a folder in ${state.currentPath}`,
+    placeholder: "Folder name",
+    validate: nameError,
+    confirmLabel: "Create"
+  });
   if (!name) return;
   runFileAction(() => postJSON("/api/files/mkdir", { path: state.currentPath, name }));
 }
@@ -279,7 +372,14 @@ async function uploadFiles(files) {
         await uploadOne(file, false);
       } catch (error) {
         if (error.status !== 409) throw error;
-        if (!confirm(`“${file.name}” already exists here. Replace it?`)) continue;
+        const replace = await confirmDialog({
+          title: "Replace file?",
+          message: `“${file.name}” already exists in this folder.`,
+          confirmLabel: "Replace",
+          cancelLabel: "Skip",
+          danger: true
+        });
+        if (!replace) continue;
         await uploadOne(file, true);
       }
       uploaded += 1;
@@ -446,17 +546,23 @@ async function openNewTerminal() {
     createTerminalEntry(info);
     activateTerminal(info.id);
   } catch (error) {
-    showOverlay(error.message, true);
+    showMessage("Could not open a terminal", error.message);
   }
 }
 
 async function closeTerminal(entry) {
-  if (!confirm(`Close ${entry.title}? Programs running in it will be stopped.`)) return;
+  const confirmed = await confirmDialog({
+    title: `Close ${entry.title}?`,
+    message: "Programs running in this terminal will be stopped.",
+    confirmLabel: "Close",
+    danger: true
+  });
+  if (!confirmed) return;
   try {
     await api(`/api/terminals/${encodeURIComponent(entry.id)}`, { method: "DELETE" });
   } catch (error) {
     if (error.status !== 404) {
-      showOverlay(error.message, true);
+      showMessage("Could not close the terminal", error.message);
       return;
     }
   }
@@ -589,7 +695,8 @@ async function manualUpdateCheck() {
   try {
     const status = await checkForUpdates(true);
     if (status && status.enabled && !status.behind) {
-      showOverlay(status.error ? `Update check failed: ${status.error}` : "WebSSH is up to date.", true);
+      if (status.error) showMessage("Update check failed", status.error);
+      else showMessage("Up to date", `WebSSH ${status.current} is the latest version on ${status.upstream}.`);
     }
   } finally {
     versionButton.disabled = false;
@@ -599,19 +706,22 @@ async function manualUpdateCheck() {
 async function startUpdate() {
   const status = state.updateStatus;
   if (!status || !status.behind) return;
-  const commits = status.commits.slice(0, 10).map(commit => `• ${commit}`).join("\n");
-  const more = status.commits.length > 10 ? `\n…and ${status.commits.length - 10} more` : "";
   const plural = status.behind === 1 ? "" : "s";
-  const message =
-    `Update WebSSH with ${status.behind} new commit${plural} from ${status.upstream}?\n\n${commits}${more}\n\n` +
-    "The service will restart. Open terminals will close and you will need to sign in again.";
-  if (!confirm(message)) return;
+  const confirmed = await confirmDialog({
+    title: "Update WebSSH",
+    message:
+      `${status.behind} new commit${plural} from ${status.upstream}.\n` +
+      "The service will restart. Open terminals will close and you will need to sign in again.",
+    items: status.commits,
+    confirmLabel: "Update and restart"
+  });
+  if (!confirmed) return;
 
   let boot;
   try {
     ({ boot } = await postJSON("/api/update"));
   } catch (error) {
-    showOverlay(error.message, true);
+    showMessage("Update failed", error.message);
     return;
   }
   showOverlay("Updating WebSSH… This page will reload when the service is back.");
@@ -634,13 +744,13 @@ async function waitForRestart(previousBoot) {
       if (attempt % 5 === 0) {
         const status = await checkForUpdates();
         if (status && !status.updating && status.error) {
-          showOverlay(status.error, true);
+          showMessage("Update failed", status.error);
           return;
         }
       }
     } catch {}
   }
-  showOverlay("The update did not finish in time. Check update.log on the server.", true);
+  showMessage("Update timed out", "The update did not finish in time. Check update.log on the server.");
 }
 
 /* ---------- Event wiring ---------- */
@@ -696,7 +806,34 @@ $("newTerminalButton").addEventListener("click", openNewTerminal);
 $("emptyNewTerminalButton").addEventListener("click", openNewTerminal);
 versionButton.addEventListener("click", manualUpdateCheck);
 updateButton.addEventListener("click", startUpdate);
-$("overlayDismiss").addEventListener("click", hideOverlay);
+$("modalForm").addEventListener("submit", event => {
+  event.preventDefault();
+  if (!modalState) return;
+  if (!modalState.withInput) {
+    settleModal(true);
+    return;
+  }
+  const value = modalInput.value.trim();
+  const error = modalState.validate ? modalState.validate(value) : "";
+  if (error) {
+    $("modalError").textContent = error;
+    modalInput.focus();
+    return;
+  }
+  settleModal(value);
+});
+$("modalCancel").addEventListener("click", () => settleModal(null));
+modalInput.addEventListener("input", () => {
+  $("modalError").textContent = "";
+});
+// Escape key and backdrop clicks cancel the dialog.
+modal.addEventListener("cancel", event => {
+  event.preventDefault();
+  settleModal(null);
+});
+modal.addEventListener("click", event => {
+  if (event.target === modal) settleModal(null);
+});
 
 let resizeFrame = 0;
 window.addEventListener("resize", () => {

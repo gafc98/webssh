@@ -76,11 +76,24 @@
     </section>
   </main>
 
-  <div id="overlay" class="overlay hidden" role="alertdialog" aria-live="assertive">
+  <div id="overlay" class="overlay hidden" role="status" aria-live="assertive">
     <div class="overlay-card">
       <p id="overlayMessage"></p>
-      <button id="overlayDismiss" class="quiet-button hidden" type="button">Dismiss</button>
     </div>
   </div>
+
+  <dialog id="modal" class="modal" aria-labelledby="modalTitle">
+    <form id="modalForm" method="dialog">
+      <h2 id="modalTitle"></h2>
+      <p id="modalMessage" class="modal-message"></p>
+      <ul id="modalList" class="modal-list hidden"></ul>
+      <input id="modalInput" class="hidden" type="text" autocomplete="off" spellcheck="false" aria-labelledby="modalTitle">
+      <div id="modalError" class="modal-error" role="alert"></div>
+      <div class="modal-actions">
+        <button id="modalCancel" class="quiet-button" type="button">Cancel</button>
+        <button id="modalConfirm" class="modal-confirm" type="submit">OK</button>
+      </div>
+    </form>
+  </dialog>
 </body>
 </html>
