@@ -21,6 +21,11 @@ const UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000;
 const RESTART_TIMEOUT_MS = 5 * 60 * 1000;
 const INPUT_CHUNK_CHARS = 8192;
 const ACTIVE_TERMINAL_KEY = "webssh.activeTerminal";
+const FILES_WIDTH_KEY = "webssh.filesWidth";
+// Keep in sync with the clamp() in .workspace (app.css).
+const MIN_FILES_WIDTH = 200;
+const MIN_TERMINAL_WIDTH = 320;
+const SPLITTER_KEY_STEP = 24;
 
 const TERMINAL_OPTIONS = {
   cursorBlink: false,
@@ -836,13 +841,67 @@ modal.addEventListener("click", event => {
 });
 
 let resizeFrame = 0;
-window.addEventListener("resize", () => {
+// Refits on window resizes and splitter drags alike.
+new ResizeObserver(() => {
   if (resizeFrame) return;
   resizeFrame = requestAnimationFrame(() => {
     resizeFrame = 0;
     for (const entry of terminals.values()) entry.fit.fit();
   });
+}).observe(terminalStack);
+
+/* ---------- Panel splitter ---------- */
+
+const workspace = $("workspace");
+const splitter = $("splitter");
+const filesPanel = $("filesPanel");
+
+function setFilesWidth(width) {
+  const max = workspace.clientWidth - splitter.offsetWidth - MIN_TERMINAL_WIDTH;
+  const clamped = Math.round(Math.max(MIN_FILES_WIDTH, Math.min(width, max)));
+  workspace.style.setProperty("--files-width", `${clamped}px`);
+}
+
+function saveFilesWidth() {
+  localStorage.setItem(FILES_WIDTH_KEY, String(Math.round(filesPanel.getBoundingClientRect().width)));
+}
+
+splitter.addEventListener("pointerdown", event => {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  splitter.setPointerCapture(event.pointerId);
+  const grabOffset = event.clientX - splitter.getBoundingClientRect().left;
+  const onMove = moveEvent => {
+    setFilesWidth(moveEvent.clientX - workspace.getBoundingClientRect().left - grabOffset);
+  };
+  document.body.classList.add("resizing");
+  splitter.addEventListener("pointermove", onMove);
+  splitter.addEventListener(
+    "lostpointercapture",
+    () => {
+      splitter.removeEventListener("pointermove", onMove);
+      document.body.classList.remove("resizing");
+      saveFilesWidth();
+    },
+    { once: true }
+  );
 });
+
+splitter.addEventListener("keydown", event => {
+  const delta = { ArrowLeft: -SPLITTER_KEY_STEP, ArrowRight: SPLITTER_KEY_STEP }[event.key];
+  if (!delta) return;
+  event.preventDefault();
+  setFilesWidth(filesPanel.getBoundingClientRect().width + delta);
+  saveFilesWidth();
+});
+
+splitter.addEventListener("dblclick", () => {
+  workspace.style.removeProperty("--files-width");
+  localStorage.removeItem(FILES_WIDTH_KEY);
+});
+
+const savedFilesWidth = Number(localStorage.getItem(FILES_WIDTH_KEY));
+if (savedFilesWidth > 0) workspace.style.setProperty("--files-width", `${savedFilesWidth}px`);
 
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) refreshStats();

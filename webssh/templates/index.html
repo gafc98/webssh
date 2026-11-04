@@ -37,8 +37,8 @@
       </div>
     </header>
 
-    <section class="workspace">
-      <aside class="panel">
+    <section id="workspace" class="workspace">
+      <aside id="filesPanel" class="panel">
         <div class="panel-head">
           <span class="panel-title">Files</span>
           <div class="file-actions">
@@ -60,6 +60,8 @@
         <div id="fileStatus" class="file-status hidden" role="status"></div>
         <div id="fileList" class="file-list"><div class="empty">Loading files…</div></div>
       </aside>
+
+      <div id="splitter" class="splitter" role="separator" aria-orientation="vertical" aria-label="Resize file panel" tabindex="0" title="Drag to resize, double-click to reset"></div>
 
       <section class="panel terminal-panel">
         <div class="panel-head terminal-head">

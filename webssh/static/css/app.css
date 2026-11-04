@@ -50,7 +50,14 @@ header { display: flex; align-items: center; justify-content: space-between; gap
 .update-button:hover { background: #fde68a; }
 
 /* Panels */
-.workspace { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(260px, 30%) 1fr; gap: 14px; }
+.workspace { flex: 1; min-height: 0; display: grid; grid-template-columns: clamp(200px, var(--files-width, 30%), calc(100% - 334px)) 14px minmax(0, 1fr); }
+.splitter { position: relative; cursor: col-resize; touch-action: none; outline: none; }
+.splitter::before { content: ""; position: absolute; inset: 8px 6px; border-radius: 1px; background: transparent; transition: background .12s; }
+.splitter::after { content: ""; position: absolute; top: 50%; left: 50%; width: 4px; height: 48px; transform: translate(-50%, -50%); border-radius: 2px; background: #475569; transition: background .12s, height .12s; }
+.splitter:hover::before, .splitter:focus-visible::before, .resizing .splitter::before { background: #67e8c133; }
+.splitter:hover::after, .splitter:focus-visible::after, .resizing .splitter::after { height: 72px; background: #67e8c1; }
+body.resizing { cursor: col-resize; user-select: none; }
+body.resizing .panel { pointer-events: none; }
 .panel { min-width: 0; background: #0d1422; border: 1px solid #27334a; border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; }
 .panel-head { min-height: 46px; padding: 0 12px 0 14px; display: flex; align-items: center; justify-content: space-between; gap: 10px; border-bottom: 1px solid #27334a; }
 .panel-title { color: #e2e8f0; font-size: 13px; font-weight: 700; }
@@ -133,5 +140,6 @@ header { display: flex; align-items: center; justify-content: space-between; gap
   .app-shell { height: auto; min-height: 100vh; }
   header { flex-wrap: wrap; }
   .stats { order: 3; flex-basis: 100%; justify-content: flex-start; }
-  .workspace { grid-template-columns: 1fr; grid-template-rows: minmax(280px, 40vh) minmax(380px, 1fr); }
+  .workspace { grid-template-columns: 1fr; grid-template-rows: minmax(280px, 40vh) minmax(380px, 1fr); gap: 14px; }
+  .splitter { display: none; }
 }
