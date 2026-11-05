@@ -103,6 +103,9 @@ body.resizing .panel { pointer-events: none; }
 .terminal-view { position: absolute; inset: 10px; visibility: hidden; }
 .terminal-view.active { visibility: visible; }
 .terminal-view .xterm { height: 100%; }
+/* xterm's 1px box-shadow bar blurs across two pixels at fractional cell widths; draw one solid bar instead. */
+#terminalStack .xterm-rows .xterm-cursor.xterm-cursor-bar { position: relative; box-shadow: none !important; animation: none !important; }
+#terminalStack .xterm-rows .xterm-cursor.xterm-cursor-bar::after { content: ""; position: absolute; top: 2px; bottom: 2px; left: 0; width: 2px; background: #fff; pointer-events: none; }
 .terminal-empty { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 4px; color: #64748b; font-size: 13px; }
 
 /* Overlay */
