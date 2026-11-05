@@ -28,10 +28,6 @@ const MIN_TERMINAL_WIDTH = 320;
 const SPLITTER_KEY_STEP = 24;
 
 const TERMINAL_OPTIONS = {
-  cursorBlink: false,
-  cursorStyle: "bar",
-  cursorWidth: 2,
-  cursorInactiveStyle: "bar",
   fontFamily: '"JetBrains Mono", monospace',
   fontSize: 14,
   lineHeight: 1.25,
