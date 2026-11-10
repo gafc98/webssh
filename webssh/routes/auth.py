@@ -5,6 +5,8 @@ import os
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from .. import otp
+from ..config import OTP_ENABLED
 from ..security import audit, client_ip, login_throttle, read_json_object, verify_csrf
 from ..sessions import end_session, require_local_session, start_session
 
@@ -82,8 +84,49 @@ async def login(request: Request) -> JSONResponse:
                 login_throttle.record_failure(ip)
                 audit(request, "login.failed", username, reason=exc.detail)
             raise
-    login_throttle.record_success(ip)
 
+    if OTP_ENABLED:
+        # Failure history is kept until the emailed code is confirmed.
+        otp.discard_pending(request.session.pop("pending_login", None))
+        token, pending = otp.create_pending(account_name, home, shell)
+        try:
+            await asyncio.to_thread(otp.send_code, pending, ip)
+        except Exception as exc:
+            otp.discard_pending(token)
+            logger.exception("Unable to email the sign-in code")
+            raise HTTPException(status_code=503, detail="Unable to email the sign-in code") from exc
+        request.session["pending_login"] = token
+        audit(request, "login.otp_sent", account_name)
+        return JSONResponse({"otp_required": True})
+
+    login_throttle.record_success(ip)
+    return await _complete_login(request, account_name, home, shell)
+
+
+@router.post("/api/login/otp")
+async def login_otp(request: Request) -> JSONResponse:
+    verify_csrf(request)
+    body = await read_json_object(request)
+    code = body.get("code")
+    if not isinstance(code, str) or not code.strip() or len(code) > 32:
+        raise HTTPException(status_code=400, detail="Enter the sign-in code")
+
+    ip = client_ip(request)
+    with login_throttle.attempt(ip):
+        try:
+            pending = otp.verify_code(request.session.get("pending_login"), code.strip())
+        except HTTPException as exc:
+            login_throttle.record_failure(ip)
+            if exc.status_code == 410:
+                request.session.pop("pending_login", None)
+            audit(request, "login.otp_failed", None, reason=exc.detail)
+            raise
+    request.session.pop("pending_login", None)
+    login_throttle.record_success(ip)
+    return await _complete_login(request, pending.username, pending.home, pending.shell)
+
+
+async def _complete_login(request: Request, account_name: str, home: str, shell: str) -> JSONResponse:
     await end_session(request.session.get("session_id"))
     request.session["session_id"] = start_session(account_name, home, shell)
     audit(request, "login", account_name)
@@ -93,6 +136,7 @@ async def login(request: Request) -> JSONResponse:
 @router.post("/api/logout")
 async def logout(request: Request) -> JSONResponse:
     verify_csrf(request)
+    otp.discard_pending(request.session.pop("pending_login", None))
     local = await end_session(request.session.pop("session_id", None))
     if local is not None:
         audit(request, "logout", local.username)

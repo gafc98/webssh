@@ -27,6 +27,8 @@ input:focus { border-color: #67e8c1; box-shadow: 0 0 0 3px #67e8c122; }
 .primary { width: 100%; margin-top: 24px; padding: 12px; border: 0; border-radius: 8px; color: #07111e; background: #67e8c1; font-weight: 700; }
 .primary:hover { background: #8af3d2; }
 .error { min-height: 20px; margin-top: 14px; color: #fda4af; font-size: 13px; }
+.link-button { width: 100%; margin-top: 12px; padding: 8px; border: 0; color: #94a3b8; background: none; font-size: 13px; }
+.link-button:hover { color: #f8fafc; }
 
 /* Shell layout */
 .app-shell { height: 100vh; min-height: 520px; display: flex; flex-direction: column; padding: 18px; gap: 14px; }

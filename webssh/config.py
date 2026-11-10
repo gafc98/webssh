@@ -54,4 +54,20 @@ LOGIN_FREE_ATTEMPTS = _env_int("WEBSSH_LOGIN_FREE_ATTEMPTS", 3)
 LOGIN_MAX_LOCKOUT_SECONDS = _env_int("WEBSSH_LOGIN_MAX_LOCKOUT_SECONDS", 15 * 60)
 AUDIT_LOG_FILE = os.environ.get("WEBSSH_AUDIT_LOG", "").strip()
 
+# Popped so the credentials are not inherited by shells or git subprocesses.
+OTP_SENDER_EMAIL = os.environ.pop("SENDER_EMAIL", "").strip()
+# Gmail displays app passwords in groups of four separated by spaces.
+OTP_SMTP_PASSWORD = os.environ.pop("PASSWORD", "").replace(" ", "")
+OTP_RECEIVER_EMAIL = os.environ.pop("RECEIVER_EMAIL", "").strip()
+OTP_SMTP_HOST = os.environ.get("WEBSSH_SMTP_HOST", "smtp.gmail.com")
+OTP_SMTP_PORT = _env_int("WEBSSH_SMTP_PORT", 587)
+OTP_TTL_SECONDS = _env_int("WEBSSH_OTP_TTL_MINUTES", 5) * 60
+
+_otp_settings = (OTP_SENDER_EMAIL, OTP_SMTP_PASSWORD, OTP_RECEIVER_EMAIL)
+OTP_ENABLED = all(_otp_settings)
+if any(_otp_settings) and not OTP_ENABLED:
+    raise RuntimeError("Email sign-in codes need SENDER_EMAIL, PASSWORD and RECEIVER_EMAIL all set")
+if not OTP_ENABLED:
+    logger.warning("Email sign-in codes are disabled; set SENDER_EMAIL, PASSWORD and RECEIVER_EMAIL to enable them")
+
 IO_CHUNK_BYTES = 1024 * 1024

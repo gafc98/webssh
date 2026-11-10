@@ -79,7 +79,7 @@ async function api(url, options = {}) {
       const body = await response.json();
       if (typeof body.detail === "string") detail = body.detail;
     } catch {}
-    if (response.status === 401 && url !== "/api/login") handleSignedOut();
+    if (response.status === 401 && !url.startsWith("/api/login")) handleSignedOut();
     throw new ApiError(detail, response.status);
   }
   return response;
@@ -106,8 +106,18 @@ function formatSize(size) {
 function showLogin(message = "") {
   appView.classList.add("hidden");
   loginView.classList.remove("hidden");
+  $("otpForm").classList.add("hidden");
+  $("loginForm").classList.remove("hidden");
   loginError.textContent = message;
   $("username").focus();
+}
+
+function showOtp() {
+  $("loginForm").classList.add("hidden");
+  $("otpForm").classList.remove("hidden");
+  $("otpError").textContent = "";
+  $("otpCode").value = "";
+  $("otpCode").focus();
 }
 
 async function showApp(info) {
@@ -766,11 +776,30 @@ $("loginForm").addEventListener("submit", async event => {
   try {
     const info = await postJSON("/api/login", { username: form.get("username"), password: form.get("password") });
     $("password").value = "";
+    if (info.otp_required) {
+      showOtp();
+      return;
+    }
     await showApp(info);
   } catch (error) {
     loginError.textContent = error.message;
   }
 });
+
+$("otpForm").addEventListener("submit", async event => {
+  event.preventDefault();
+  $("otpError").textContent = "";
+  try {
+    const info = await postJSON("/api/login/otp", { code: $("otpCode").value });
+    $("otpCode").value = "";
+    await showApp(info);
+  } catch (error) {
+    if (error.status === 410) showLogin(error.message);
+    else $("otpError").textContent = error.message;
+  }
+});
+
+$("otpBack").addEventListener("click", () => showLogin());
 
 $("logoutButton").addEventListener("click", async () => {
   try {

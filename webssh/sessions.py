@@ -9,6 +9,7 @@ from typing import Any, Coroutine
 from fastapi import HTTPException
 from starlette.requests import HTTPConnection
 
+from . import otp
 from .config import MAX_TERMINALS, SESSION_IDLE_SECONDS, TERMINAL_GRACE_SECONDS
 from .security import login_throttle
 from .terminal import Terminal
@@ -137,5 +138,6 @@ async def housekeeping() -> None:
                         local.terminals.pop(terminal.id, None)
                         await terminal.close()
             login_throttle.prune()
+            otp.prune()
         except Exception:
             logger.exception("Session housekeeping failed")
